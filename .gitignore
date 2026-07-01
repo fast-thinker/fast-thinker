@@ -1,0 +1,31 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+.thinker/
+.venv/
+venv/
+
+# Local configuration and credentials. Keep the example file trackable.
+.env
+.env.*
+!.env.example
+secrets/
+wandb/
+
+# Build and editor artifacts.
+build/
+dist/
+*.egg-info/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# External code is for reading outside this package, not vendoring here.
+reference_code/
+vendor/
