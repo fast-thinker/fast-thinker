@@ -105,6 +105,28 @@ class LongContextInferenceBackend(Protocol):
     ) -> list[tuple[str, int]]:
         ...
 
+    def generate_original_messages_batch(
+        self,
+        messages_list: list[list[dict[str, str]]],
+        *,
+        max_new_tokens_list: list[int | None] | None = None,
+        enable_thinking: bool = True,
+        stop: list[str] | None = None,
+        continue_final_message: bool = False,
+    ) -> list[tuple[str, int]]:
+        ...
+
+    def generate_for_miners_messages_batch(
+        self,
+        requests: list[tuple[str, dict[str, bytes], list[dict[str, str]]]],
+        *,
+        max_new_tokens_list: list[int | None] | None = None,
+        enable_thinking: bool = True,
+        stop: list[str] | None = None,
+        continue_final_message: bool = False,
+    ) -> list[tuple[str, int]]:
+        ...
+
     def count_tokens(self, text: str) -> int:
         ...
 
@@ -172,7 +194,7 @@ class _BatchedMinerAnswerState:
     final_answers: dict[str, list[str | None]]
     completion_lens: dict[str, list[int]]
     search_queries: dict[str, list[str | None]]
-    followup_requests: list[tuple[str, dict[str, bytes], str]]
+    followup_requests: list[tuple[str, dict[str, bytes], list[dict[str, str]]]]
     followup_budgets: list[int]
     followup_positions: list[tuple[str, int, int]]
 
@@ -413,6 +435,46 @@ class LongContextQAEvaluator:
             raise ValueError("original budgeted generation left a missing completion")
         return [completion for completion in completions if completion is not None]
 
+    def _generate_original_messages_with_budgets(
+        self,
+        messages_list: list[list[dict[str, str]]],
+        budgets: list[int],
+        *,
+        enable_thinking: bool = True,
+        continue_final_message: bool = False,
+        progress_label: str = "long-context original generation",
+    ) -> list[tuple[str, int]]:
+        if len(messages_list) != len(budgets):
+            raise ValueError("messages_list and budgets must have the same length")
+        if not messages_list:
+            return []
+
+        completions: list[tuple[str, int] | None] = [None] * len(messages_list)
+        grouped: dict[int, list[int]] = {}
+        for index, budget in enumerate(budgets):
+            grouped.setdefault(max(1, int(budget)), []).append(index)
+
+        with self._progress(len(messages_list), progress_label) as progress:
+            for budget, indexes in grouped.items():
+                chunk_messages = [messages_list[index] for index in indexes]
+                chunk_completions = self._inference.generate_original_messages_batch(
+                    chunk_messages,
+                    max_new_tokens_list=[budget] * len(chunk_messages),
+                    enable_thinking=enable_thinking,
+                    continue_final_message=continue_final_message,
+                )
+                if len(chunk_completions) != len(indexes):
+                    raise ValueError(
+                        "original model must return exactly one response per message"
+                    )
+                for index, completion in zip(indexes, chunk_completions):
+                    completions[index] = completion
+                progress.update(len(indexes))
+
+        if any(completion is None for completion in completions):
+            raise ValueError("original message generation left a missing completion")
+        return [completion for completion in completions if completion is not None]
+
     def _generate_miner(
         self,
         miner_id: str,
@@ -472,6 +534,48 @@ class LongContextQAEvaluator:
 
         if any(completion is None for completion in completions):
             raise ValueError("miner budgeted generation left a missing completion")
+        return [completion for completion in completions if completion is not None]
+
+    def _generate_miner_messages_with_budgets(
+        self,
+        miner_id: str,
+        adapter_files: dict[str, bytes],
+        messages_list: list[list[dict[str, str]]],
+        budgets: list[int],
+        *,
+        continue_final_message: bool = False,
+        progress_label: str = "miner long-context generation",
+    ) -> list[tuple[str, int]]:
+        if len(messages_list) != len(budgets):
+            raise ValueError("messages_list and budgets must have the same length")
+        if not messages_list:
+            return []
+
+        completions: list[tuple[str, int] | None] = [None] * len(messages_list)
+        grouped: dict[int, list[int]] = {}
+        for index, budget in enumerate(budgets):
+            grouped.setdefault(max(1, int(budget)), []).append(index)
+
+        with self._progress(len(messages_list), progress_label) as progress:
+            for budget, indexes in grouped.items():
+                chunk_messages = [messages_list[index] for index in indexes]
+                requests = [
+                    (miner_id, adapter_files, messages)
+                    for messages in chunk_messages
+                ]
+                chunk_completions = self._inference.generate_for_miners_messages_batch(
+                    requests,
+                    max_new_tokens_list=[budget] * len(chunk_messages),
+                    continue_final_message=continue_final_message,
+                )
+                if len(chunk_completions) != len(indexes):
+                    raise ValueError("miner must return exactly one response per message")
+                for index, completion in zip(indexes, chunk_completions):
+                    completions[index] = completion
+                progress.update(len(indexes))
+
+        if any(completion is None for completion in completions):
+            raise ValueError("miner message generation left a missing completion")
         return [completion for completion in completions if completion is not None]
 
     def generate_instances(self, seeds: list[str]) -> list[LongContextQAInstance]:
@@ -774,7 +878,7 @@ class LongContextQAEvaluator:
                     (
                         miner_id,
                         adapter_files,
-                        self._build_search_followup_prompt(
+                        self._build_search_followup_messages(
                             prompt, first_response, search_query
                         ),
                     )
@@ -790,10 +894,10 @@ class LongContextQAEvaluator:
         with self._progress(
             len(state.followup_requests), "miner long-context final answers"
         ) as progress:
-            final_completions = self._inference.generate_for_miners_batch(
+            final_completions = self._inference.generate_for_miners_messages_batch(
                 state.followup_requests,
                 max_new_tokens_list=state.followup_budgets,
-                system_prompt=MINER_SYSTEM_PROMPT,
+                continue_final_message=True,
             )
             progress.update(len(state.followup_requests))
         if len(final_completions) != len(state.followup_requests):
@@ -1108,7 +1212,7 @@ class LongContextQAEvaluator:
         completion_lens: list[int] = [0] * len(instances)
         search_queries: list[str | None] = [None] * len(instances)
         followup_indexes: list[int] = []
-        followup_prompts: list[str] = []
+        followup_prompts: list[list[dict[str, str]]] = []
         followup_first_lens: list[int] = []
         followup_budgets: list[int] = []
 
@@ -1135,18 +1239,18 @@ class LongContextQAEvaluator:
             followup_indexes.append(idx)
             followup_first_lens.append(first_len)
             followup_prompts.append(
-                self._build_search_followup_prompt(
+                self._build_search_followup_messages(
                     prompt, first_response, search_query
                 )
             )
             followup_budgets.append(self._miner_budget(spent_tokens=first_len))
 
         if followup_prompts:
-            final_completions = self._generate_original_with_budgets(
+            final_completions = self._generate_original_messages_with_budgets(
                 followup_prompts,
                 followup_budgets,
                 enable_thinking=True,
-                system_prompt=MINER_SYSTEM_PROMPT,
+                continue_final_message=True,
                 progress_label="baseline long-context evidence selection",
             )
             if len(final_completions) != len(followup_prompts):
@@ -1177,12 +1281,12 @@ class LongContextQAEvaluator:
         budget = int(self._config.miner_max_tokens) - max(0, int(spent_tokens))
         return max(1, budget)
 
-    def _build_search_followup_prompt(
+    def _build_search_followup_messages(
         self,
         prompt: str,
         first_response: str,
         search_query: str,
-    ) -> str:
+    ) -> list[dict[str, str]]:
         hits = self._retriever.search(
             search_query, topk=self._config.answer_context_topk
         )
@@ -1195,12 +1299,11 @@ class LongContextQAEvaluator:
             bounded_response,
             information_block,
         )
-        return (
-            f"{prompt}\n\n"
-            f"{response_with_information}\n\n"
-            "Continue the same response after the injected information block. "
-            "Do not repeat earlier text."
-        )
+        return [
+            {"role": "system", "content": MINER_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": response_with_information},
+        ]
 
     def _truncate_search_query(self, query: str) -> str:
         limit = max(1, int(self._config.search_query_max_tokens))
@@ -1251,7 +1354,7 @@ class LongContextQAEvaluator:
         completion_lens: list[int] = [0] * len(instances)
         search_queries: list[str | None] = [None] * len(instances)
         followup_indexes: list[int] = []
-        followup_prompts: list[str] = []
+        followup_prompts: list[list[dict[str, str]]] = []
         followup_first_lens: list[int] = []
         followup_budgets: list[int] = []
 
@@ -1278,19 +1381,19 @@ class LongContextQAEvaluator:
             followup_indexes.append(idx)
             followup_first_lens.append(first_len)
             followup_prompts.append(
-                self._build_search_followup_prompt(
+                self._build_search_followup_messages(
                     prompt, first_response, search_query
                 )
             )
             followup_budgets.append(self._miner_budget(spent_tokens=first_len))
 
         if followup_prompts:
-            final_completions = self._generate_miner_with_budgets(
+            final_completions = self._generate_miner_messages_with_budgets(
                 miner_id,
                 adapter_files,
                 followup_prompts,
                 followup_budgets,
-                system_prompt=MINER_SYSTEM_PROMPT,
+                continue_final_message=True,
                 progress_label=f"miner {miner_id} long-context final answers",
             )
             if len(final_completions) != len(followup_prompts):

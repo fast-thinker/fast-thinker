@@ -348,6 +348,15 @@ def _add_run_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argum
         help="Disable long-context QA samples for this run.",
     )
     parser.add_argument(
+        "--test-mode",
+        choices=("math", "long_qa", "science"),
+        default=None,
+        help=(
+            "Run one task-only full-evaluation pass: math, long_qa, or science "
+            "(multiple-choice). Test mode skips W&B logging and chain weights."
+        ),
+    )
+    parser.add_argument(
         "--poll-seconds", type=float, default=12.0, help="Seconds between checks for a new epoch"
     )
     parser.add_argument(
@@ -1160,32 +1169,40 @@ def _run_validator_epochs(
                 token=hf_token,
                 max_recipients=config.max_submission_recipients,
             )
-            try:
-                wandb_logger.start_epoch(epoch, pointers)
-            except Exception as exc:
-                logger.warning(
-                    "W&B progress initialization failed for epoch %s: %s",
-                    epoch,
-                    type(exc).__name__,
-                )
+            if wandb_logger is not None:
+                try:
+                    wandb_logger.start_epoch(epoch, pointers)
+                except Exception as exc:
+                    logger.warning(
+                        "W&B progress initialization failed for epoch %s: %s",
+                        epoch,
+                        type(exc).__name__,
+                    )
             results = loop.run_epoch(
                 pointers,
                 n_long_context_qa=long_context_qa_count,
+                n_multiple_choice=config.qualification_multiple_choice_per_epoch,
                 epoch=epoch,
                 common_seed=common_seed,
+                test_mode=args.test_mode,
             )
-            try:
-                wandb_logger.log_epoch(epoch, results)
-            except Exception as exc:
-                logger.exception(
-                    "compulsory W&B logging failed for epoch %s", epoch
-                )
+            if wandb_logger is not None:
+                try:
+                    wandb_logger.log_epoch(epoch, results)
+                except Exception as exc:
+                    logger.exception(
+                        "compulsory W&B logging failed for epoch %s", epoch
+                    )
+                    _status(
+                        f"epoch {epoch}: compulsory W&B logging failed with "
+                        f"{type(exc).__name__}: {exc}; stopping validator"
+                    )
+                    return 1
+                _status(f"epoch {epoch}: W&B metrics logged")
+            elif args.test_mode is not None:
                 _status(
-                    f"epoch {epoch}: compulsory W&B logging failed with "
-                    f"{type(exc).__name__}: {exc}; stopping validator"
+                    f"epoch {epoch}: test mode {args.test_mode}; W&B logging skipped"
                 )
-                return 1
-            _status(f"epoch {epoch}: W&B metrics logged")
             for miner_id, result in results.items():
                 if result.score is not None:
                     print(
@@ -1200,14 +1217,15 @@ def _run_validator_epochs(
         except Exception as exc:
             epoch_label = "unknown" if epoch is None else str(epoch)
             if epoch is not None:
-                try:
-                    wandb_logger.fail_epoch(epoch)
-                except Exception:
-                    logger.warning(
-                        "W&B progress failure status could not be logged for "
-                        "epoch %s",
-                        epoch,
-                    )
+                if wandb_logger is not None:
+                    try:
+                        wandb_logger.fail_epoch(epoch)
+                    except Exception:
+                        logger.warning(
+                            "W&B progress failure status could not be logged for "
+                            "epoch %s",
+                            epoch,
+                        )
             logger.exception("validator epoch %s failed", epoch_label)
             _status(
                 f"epoch {epoch_label}: failed with "
@@ -1259,15 +1277,40 @@ def _run_validator_loop(args: argparse.Namespace) -> int:
     owner_key_subtensor = None
     weight_subtensor = None
     try:
+        test_mode = args.test_mode
+        long_context_qa_count = _long_context_qa_count(args, config)
+        if test_mode in {"math", "science"}:
+            long_context_qa_count = 0
+        if test_mode == "long_qa" and long_context_qa_count <= 0:
+            _status(
+                "--test-mode long_qa requires at least one long-context QA sample; "
+                "remove --no-long-context-qa or set THINKER_N_LONG_CONTEXT_QA_PER_EPOCH above 0"
+            )
+            return 1
+        if (
+            test_mode == "science"
+            and config.qualification_multiple_choice_per_epoch <= 0
+        ):
+            _status(
+                "--test-mode science requires THINKER_QUALIFICATION_MULTIPLE_CHOICE_PER_EPOCH above 0"
+            )
+            return 1
+        needs_retrieval = (
+            test_mode == "long_qa"
+            or (test_mode is None and long_context_qa_count > 0)
+        )
         _status(
             f"starting validator run: network={args.network}, netuid={args.netuid}, "
-            f"mock={args.mock}, set_weights={not args.no_set_weights}, "
+            f"mock={args.mock}, set_weights={not args.no_set_weights and test_mode is None}, "
             f"burn_rate={args.burn_rate}, "
-            f"evaluation_delay_epochs={evaluation_delay_epochs}"
+            f"evaluation_delay_epochs={evaluation_delay_epochs}, "
+            f"test_mode={test_mode or 'off'}"
         )
-        if not args.no_retrieval:
+        if not args.no_retrieval and needs_retrieval:
             retrieval_handle = start_validator_runtime(config, args)
             print(f"Thinker retrieval service ready at {retrieval_handle.url}/retrieve", flush=True)
+        elif not needs_retrieval:
+            _status("retrieval bootstrap skipped; selected evaluation mode does not use long-context QA")
         else:
             _status("retrieval bootstrap disabled by --no-retrieval")
 
@@ -1311,9 +1354,14 @@ def _run_validator_loop(args: argparse.Namespace) -> int:
             f"{_OWNER_KEY_REFRESH_SECONDS}s"
         )
         owner_key_refresher.start()
-        if args.no_set_weights:
+        if args.no_set_weights or test_mode is not None:
             weight_setter = chain.NullWeightSetter(log=_status)
-            _status("weight-setting disabled by --no-set-weights; scores will be computed but not written to chain")
+            if test_mode is not None:
+                _status(
+                    f"test mode {test_mode}: weight-setting disabled; scores will be computed but not written to chain"
+                )
+            else:
+                _status("weight-setting disabled by --no-set-weights; scores will be computed but not written to chain")
         else:
             weight_setter = chain.PeriodicWeightSetter(
                 chain.BittensorWeightSetter(
@@ -1330,12 +1378,14 @@ def _run_validator_loop(args: argparse.Namespace) -> int:
                 f"then writing the latest scores every {_WEIGHT_RETRY_SECONDS}s"
             )
         weight_setter.start()
-        wandb_logger = _build_wandb_logger(
-            args, config, wallet.hotkey.ss58_address
-        )
+        if test_mode is None:
+            wandb_logger = _build_wandb_logger(
+                args, config, wallet.hotkey.ss58_address
+            )
+        else:
+            _status(f"test mode {test_mode}: W&B logging disabled")
 
-        long_context_qa_count = _long_context_qa_count(args, config)
-        if long_context_qa_count > 0 and retrieval_handle is None:
+        if needs_retrieval and retrieval_handle is None:
             raise RuntimeError(
                 "long-context QA requires the local retrieval service; remove --no-retrieval, "
                 "pass --no-long-context-qa, or set THINKER_N_LONG_CONTEXT_QA_PER_EPOCH=0"
@@ -1365,6 +1415,11 @@ def _run_validator_loop(args: argparse.Namespace) -> int:
             )
         else:
             _status(f"epoch composition: {config.n_problems_per_epoch} math sample(s), 0 long-context QA sample(s)")
+        if test_mode is not None:
+            _status(
+                f"test mode {test_mode}: task-only full evaluation; "
+                "qualification, W&B, chain weights, cache, and round-state updates are skipped"
+            )
         qualification_thinking = min(
             max(0, config.qualification_multiple_choice_thinking_per_epoch),
             max(0, config.qualification_multiple_choice_per_epoch),
@@ -1421,7 +1476,9 @@ def _run_validator_loop(args: argparse.Namespace) -> int:
                 {_MOCK_MINER_ID} if args.mock else None
             ),
             show_progress=not args.no_generation_progress,
-            progress_callback=wandb_logger.log_progress,
+            progress_callback=(
+                wandb_logger.log_progress if wandb_logger is not None else None
+            ),
         )
 
         return _run_validator_epochs(

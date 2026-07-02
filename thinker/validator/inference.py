@@ -263,21 +263,32 @@ class BaseModelServer:
         messages_list: list[list[dict[str, str]]],
         *,
         enable_thinking: bool = True,
+        continue_final_message: bool = False,
     ) -> list[list[int]]:
         token_ids_list: list[list[int]] = []
         for messages in messages_list:
+            add_generation_prompt = not continue_final_message
             try:
+                kwargs = _chat_template_kwargs(enable_thinking)
+                if continue_final_message:
+                    kwargs["continue_final_message"] = True
                 tokenized = self._tokenizer.apply_chat_template(
                     messages,
                     tokenize=True,
-                    add_generation_prompt=True,
-                    **_chat_template_kwargs(enable_thinking),
+                    add_generation_prompt=add_generation_prompt,
+                    **kwargs,
                 )
             except TypeError:
+                if continue_final_message:
+                    raise RuntimeError(
+                        "tokenizer does not support continuing the final assistant "
+                        "message; cannot inject retrieval output as an in-progress "
+                        "tool result"
+                    ) from None
                 tokenized = self._tokenizer.apply_chat_template(
                     messages,
                     tokenize=True,
-                    add_generation_prompt=True,
+                    add_generation_prompt=add_generation_prompt,
                 )
             except Exception:
                 tokenized = self._tokenizer.encode(messages[0]["content"])
@@ -285,17 +296,26 @@ class BaseModelServer:
                 token_ids = self._normalize_token_ids(tokenized)
             except TypeError:
                 try:
+                    kwargs = _chat_template_kwargs(enable_thinking)
+                    if continue_final_message:
+                        kwargs["continue_final_message"] = True
                     rendered = self._tokenizer.apply_chat_template(
                         messages,
                         tokenize=False,
-                        add_generation_prompt=True,
-                        **_chat_template_kwargs(enable_thinking),
+                        add_generation_prompt=add_generation_prompt,
+                        **kwargs,
                     )
                 except TypeError:
+                    if continue_final_message:
+                        raise RuntimeError(
+                            "tokenizer does not support continuing the final assistant "
+                            "message; cannot inject retrieval output as an in-progress "
+                            "tool result"
+                        ) from None
                     rendered = self._tokenizer.apply_chat_template(
                         messages,
                         tokenize=False,
-                        add_generation_prompt=True,
+                        add_generation_prompt=add_generation_prompt,
                     )
                 if isinstance(rendered, (list, tuple)) and all(
                     isinstance(chunk, str) for chunk in rendered
@@ -329,10 +349,15 @@ class BaseModelServer:
         messages_list: list[list[dict[str, str]]],
         *,
         enable_thinking: bool = True,
+        continue_final_message: bool = False,
     ) -> list[int]:
         return [
             len(ids)
-            for ids in self._chat_token_ids(messages_list, enable_thinking=enable_thinking)
+            for ids in self._chat_token_ids(
+                messages_list,
+                enable_thinking=enable_thinking,
+                continue_final_message=continue_final_message,
+            )
         ]
 
     def generate_original(
@@ -433,6 +458,108 @@ class BaseModelServer:
                 lora_request=lora_request,
             )
 
+        return self._collect_results(prompts, outputs)
+
+    def generate_original_messages_batch(
+        self,
+        messages_list: list[list[dict[str, str]]],
+        sampling_params_list: list[Any],
+        *,
+        enable_thinking: bool = True,
+        continue_final_message: bool = False,
+    ) -> list[GenerationResult]:
+        if len(messages_list) != len(sampling_params_list):
+            raise ValueError("messages_list and sampling_params_list must align")
+        prompts = [
+            next(
+                (
+                    str(message.get("content", ""))
+                    for message in reversed(messages)
+                    if message.get("role") == "user"
+                ),
+                "",
+            )
+            for messages in messages_list
+        ]
+        token_ids_list = self._chat_token_ids(
+            messages_list,
+            enable_thinking=enable_thinking,
+            continue_final_message=continue_final_message,
+        )
+        outputs = self._llm.generate(
+            [{"prompt_token_ids": ids} for ids in token_ids_list],
+            sampling_params_list,
+            use_tqdm=self._show_progress,
+        )
+        if len(outputs) != len(messages_list):
+            raise RuntimeError(
+                f"vLLM returned {len(outputs)} output(s) for {len(messages_list)} "
+                "original message request(s)"
+            )
+        return self._collect_results(prompts, outputs)
+
+    def generate_for_miners_messages_batch(
+        self,
+        requests: list[tuple[str, dict[str, bytes], list[dict[str, str]]]],
+        sampling_params_list: list[Any],
+        *,
+        enable_thinking: bool = True,
+        continue_final_message: bool = False,
+    ) -> list[GenerationResult]:
+        if not requests:
+            return []
+        if len(requests) != len(sampling_params_list):
+            raise ValueError("requests and sampling_params_list must align")
+
+        from vllm.lora.request import LoRARequest
+
+        messages_list = [messages for _miner_uid, _adapter_files, messages in requests]
+        prompts = [
+            next(
+                (
+                    str(message.get("content", ""))
+                    for message in reversed(messages)
+                    if message.get("role") == "user"
+                ),
+                "",
+            )
+            for messages in messages_list
+        ]
+        token_ids_list = self._chat_token_ids(
+            messages_list,
+            enable_thinking=enable_thinking,
+            continue_final_message=continue_final_message,
+        )
+
+        with contextlib.ExitStack() as stack:
+            lora_request_by_hash: dict[str, Any] = {}
+            lora_requests: list[Any] = []
+            for miner_uid, adapter_files, _messages in requests:
+                adapter_hash = _hash_adapter_files(adapter_files)
+                lora_request = lora_request_by_hash.get(adapter_hash)
+                if lora_request is None:
+                    adapter_path = stack.enter_context(self._materialize_adapter(adapter_files))
+                    lora_request = _make_lora_request(
+                        LoRARequest,
+                        lora_name=f"miner-{miner_uid}",
+                        lora_int_id=self._lora_id_for(adapter_hash),
+                        adapter_path=adapter_path,
+                    )
+                    lora_request_by_hash[adapter_hash] = lora_request
+                lora_requests.append(lora_request)
+
+            outputs = self._llm.generate(
+                [{"prompt_token_ids": ids} for ids in token_ids_list],
+                sampling_params_list,
+                lora_request=lora_requests,
+                use_tqdm=self._show_progress,
+            )
+
+        if len(outputs) != len(requests):
+            raise RuntimeError(
+                f"vLLM returned {len(outputs)} output(s) for {len(requests)} batched "
+                "cross-miner message request(s)"
+            )
         return self._collect_results(prompts, outputs)
 
     def generate_for_miners_batch(
@@ -575,6 +702,7 @@ class VllmInferenceBackend:
         max_new_tokens: int | None = None,
         enable_thinking: bool = True,
         stop: list[str] | None = None,
+        continue_final_message: bool = False,
     ) -> Any:
         base_sampling_params = (
             self._sampling_params if sampling_params is None else sampling_params
@@ -593,7 +721,9 @@ class VllmInferenceBackend:
                 params.include_stop_str_in_output = True
             return params
         prompt_len = self._server.count_message_tokens(
-            [messages], enable_thinking=enable_thinking
+            [messages],
+            enable_thinking=enable_thinking,
+            continue_final_message=continue_final_message,
         )[0]
         remaining = self._max_total_tokens - prompt_len
         if remaining <= 0:
@@ -766,6 +896,78 @@ class VllmInferenceBackend:
                 f"vLLM returned {len(results)} output(s) for one chat request"
             )
         return results[0].completion, results[0].token_count
+
+    def generate_original_messages_batch(
+        self,
+        messages_list: list[list[dict[str, str]]],
+        *,
+        max_new_tokens_list: list[int | None] | None = None,
+        enable_thinking: bool = True,
+        stop: list[str] | None = None,
+        continue_final_message: bool = False,
+    ) -> list[tuple[str, int]]:
+        if not messages_list:
+            return []
+        if max_new_tokens_list is None:
+            max_new_tokens_list = [None] * len(messages_list)
+        if len(max_new_tokens_list) != len(messages_list):
+            raise ValueError("max_new_tokens_list must align with messages_list")
+        sampling_params_list = [
+            self._sampling_params_for_messages(
+                messages,
+                sampling_params=self._original_sampling_params,
+                max_new_tokens=budget,
+                enable_thinking=enable_thinking,
+                stop=stop,
+                continue_final_message=continue_final_message,
+            )
+            for messages, budget in zip(messages_list, max_new_tokens_list)
+        ]
+        return self._as_tuples(
+            self._server.generate_original_messages_batch(
+                messages_list,
+                sampling_params_list,
+                enable_thinking=enable_thinking,
+                continue_final_message=continue_final_message,
+            )
+        )
+
+    def generate_for_miners_messages_batch(
+        self,
+        requests: list[tuple[str, dict[str, bytes], list[dict[str, str]]]],
+        *,
+        max_new_tokens_list: list[int | None] | None = None,
+        enable_thinking: bool = True,
+        stop: list[str] | None = None,
+        continue_final_message: bool = False,
+    ) -> list[tuple[str, int]]:
+        if not requests:
+            return []
+        if max_new_tokens_list is None:
+            max_new_tokens_list = [None] * len(requests)
+        if len(max_new_tokens_list) != len(requests):
+            raise ValueError("max_new_tokens_list must align with requests")
+
+        sampling_params_list = [
+            self._sampling_params_for_messages(
+                messages,
+                max_new_tokens=budget,
+                enable_thinking=enable_thinking,
+                stop=stop,
+                continue_final_message=continue_final_message,
+            )
+            for (_miner_uid, _adapter_files, messages), budget in zip(
+                requests, max_new_tokens_list
+            )
+        ]
+        return self._as_tuples(
+            self._server.generate_for_miners_messages_batch(
+                requests,
+                sampling_params_list,
+                enable_thinking=enable_thinking,
+                continue_final_message=continue_final_message,
+            )
+        )
 
     def generate_for_miners_batch(
         self,

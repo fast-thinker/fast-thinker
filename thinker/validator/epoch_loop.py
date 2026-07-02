@@ -1905,6 +1905,277 @@ class EpochLoop:
         self._set_weights_from_results(results)
         return results
 
+    def _prepare_test_submissions(
+        self,
+        pointers: dict[str, MinerSubmissionPointer],
+    ) -> tuple[dict[str, PreparedMinerSubmission], dict[str, MinerEpochResult]]:
+        prepared: dict[str, PreparedMinerSubmission] = {}
+        results: dict[str, MinerEpochResult] = {}
+        rejected_messages: list[str] = []
+        with self._progress(
+            len(pointers), "submission checks", unit="miner"
+        ) as progress:
+            for miner_id, pointer in pointers.items():
+                prepared_or_rejected = self.prepare_miner(miner_id, pointer)
+                if isinstance(prepared_or_rejected, MinerEpochResult):
+                    results[miner_id] = prepared_or_rejected
+                    rejected_messages.append(
+                        f"submission checks: {miner_id} rejected: "
+                        f"{prepared_or_rejected.rejected_reason}"
+                    )
+                else:
+                    prepared[miner_id] = prepared_or_rejected
+                progress.update(1)
+                progress.set_postfix(
+                    accepted=len(prepared), rejected=len(results), refresh=False
+                )
+
+        for message in rejected_messages:
+            self._log(message)
+        print(
+            f"[thinker-validator] submission checks: {len(prepared)} accepted, "
+            f"{len(results)} rejected",
+            flush=True,
+        )
+        return prepared, results
+
+    def _run_test_math_epoch(
+        self,
+        prepared: dict[str, PreparedMinerSubmission],
+        *,
+        n_problems: int,
+        epoch: int,
+        common_seed: str | None,
+    ) -> dict[str, MinerEpochResult]:
+        self._log(
+            f"test mode math: scoring baseline ({n_problems} math sample(s))"
+        )
+        batch = self.build_math_batch(
+            n_problems,
+            epoch=epoch,
+            common_seed=common_seed,
+            seed_namespace="test_mode",
+        )
+        original_rollouts = self.score_original_batch(batch)
+        math_completions, math_errors = self._generate_miners_math_completions_batch(
+            [
+                (miner_id, submission.adapter_files)
+                for miner_id, submission in prepared.items()
+            ],
+            batch,
+            original_rollouts,
+        )
+        math_scores = self._score_miners_math_completions_batch(
+            batch,
+            original_rollouts,
+            math_completions,
+        )
+
+        results: dict[str, MinerEpochResult] = {}
+        total = len(prepared)
+        for idx, (miner_id, prepared_submission) in enumerate(prepared.items(), start=1):
+            start = time.monotonic()
+            self._log(f"test mode math: scoring miner {idx}/{total} {miner_id}")
+            if miner_id in math_errors:
+                result = MinerEpochResult(
+                    miner_id, None, f"inference_failed: {math_errors[miner_id]}"
+                )
+            else:
+                result = self._score_prepared_miner(
+                    prepared_submission,
+                    batch,
+                    original_rollouts,
+                    [],
+                    [],
+                    precomputed_math_completions=math_completions.get(miner_id, []),
+                    precomputed_math_scores=math_scores.get(miner_id),
+                    precomputed_long_context_results=[],
+                )
+            results[miner_id] = result
+            self._log(
+                f"test mode math: miner {idx}/{total} {miner_id} done in "
+                f"{time.monotonic() - start:.1f}s; {self._score_summary(result)}"
+            )
+        return results
+
+    def _run_test_long_context_epoch(
+        self,
+        prepared: dict[str, PreparedMinerSubmission],
+        *,
+        n_questions: int,
+        epoch: int,
+        common_seed: str | None,
+    ) -> dict[str, MinerEpochResult]:
+        self._log(
+            "test mode long_qa: scoring baseline "
+            f"({n_questions} long-context QA sample(s))"
+        )
+        batch = self.build_long_context_batch(
+            n_questions,
+            epoch=epoch,
+            common_seed=common_seed,
+            seed_namespace="test_mode",
+        )
+        original_long_context = self.score_original_long_context_batch(batch)
+        long_context_results, long_context_errors = (
+            self._score_miners_long_context_batch(
+                list(prepared.items()),
+                batch,
+                original_long_context,
+            )
+        )
+
+        results: dict[str, MinerEpochResult] = {}
+        total = len(prepared)
+        for idx, (miner_id, prepared_submission) in enumerate(prepared.items(), start=1):
+            start = time.monotonic()
+            self._log(f"test mode long_qa: scoring miner {idx}/{total} {miner_id}")
+            if miner_id in long_context_errors:
+                result = MinerEpochResult(
+                    miner_id,
+                    None,
+                    f"long_context_failed: {long_context_errors[miner_id]}",
+                )
+            else:
+                result = self._score_prepared_miner(
+                    prepared_submission,
+                    [],
+                    [],
+                    batch,
+                    original_long_context,
+                    precomputed_math_completions=[],
+                    precomputed_math_scores=[],
+                    precomputed_long_context_results=long_context_results.get(miner_id),
+                )
+            results[miner_id] = result
+            self._log(
+                f"test mode long_qa: miner {idx}/{total} {miner_id} done in "
+                f"{time.monotonic() - start:.1f}s; {self._score_summary(result)}"
+            )
+        return results
+
+    def _run_test_science_epoch(
+        self,
+        prepared: dict[str, PreparedMinerSubmission],
+        *,
+        n_samples: int,
+        epoch: int,
+        common_seed: str | None,
+    ) -> dict[str, MinerEpochResult]:
+        thinking_count = min(
+            max(0, self._config.qualification_multiple_choice_thinking_per_epoch),
+            max(0, n_samples),
+        )
+        no_thinking_count = max(0, n_samples - thinking_count)
+        self._log(
+            "test mode science: scoring baseline "
+            f"({n_samples} multiple-choice sample(s), "
+            f"{thinking_count} thinking, {no_thinking_count} no-thinking)"
+        )
+        batch = self.build_multiple_choice_batch(
+            n_samples,
+            thinking_count,
+            epoch=epoch,
+            common_seed=common_seed,
+            seed_namespace="test_mode",
+        )
+        originals = self.score_original_multiple_choice_batch(batch)
+        multiple_choice_results, multiple_choice_errors = (
+            self._score_miners_multiple_choice_batch(
+                list(prepared.items()),
+                batch,
+                originals,
+            )
+        )
+
+        results: dict[str, MinerEpochResult] = {}
+        total = len(prepared)
+        for idx, (miner_id, prepared_submission) in enumerate(prepared.items(), start=1):
+            start = time.monotonic()
+            self._log(f"test mode science: scoring miner {idx}/{total} {miner_id}")
+            if miner_id in multiple_choice_errors:
+                result = MinerEpochResult(
+                    miner_id,
+                    None,
+                    f"multiple_choice_failed: {multiple_choice_errors[miner_id]}",
+                )
+            else:
+                result = self._score_prepared_multiple_choice(
+                    prepared_submission,
+                    batch,
+                    originals,
+                    precomputed_results=multiple_choice_results.get(miner_id),
+                )
+            results[miner_id] = result
+            self._log(
+                f"test mode science: miner {idx}/{total} {miner_id} done in "
+                f"{time.monotonic() - start:.1f}s; {self._score_summary(result)}"
+            )
+        return results
+
+    def _run_test_epoch(
+        self,
+        pointers: dict[str, MinerSubmissionPointer],
+        *,
+        mode: str,
+        n_problems: int | None,
+        n_long_context_qa: int | None,
+        n_multiple_choice: int | None,
+        epoch: int,
+        common_seed: str | None,
+    ) -> dict[str, MinerEpochResult]:
+        self._log(
+            f"test mode {mode}: task-only full evaluation; "
+            "skipping qualification, weights, cache, and round-state updates"
+        )
+        prepared, rejected_results = self._prepare_test_submissions(pointers)
+        if not prepared:
+            self._log_results_table(rejected_results)
+            return rejected_results
+
+        if mode == "math":
+            scored_results = self._run_test_math_epoch(
+                prepared,
+                n_problems=(
+                    n_problems
+                    if n_problems is not None
+                    else self._config.n_problems_per_epoch
+                ),
+                epoch=epoch,
+                common_seed=common_seed,
+            )
+        elif mode == "long_qa":
+            scored_results = self._run_test_long_context_epoch(
+                prepared,
+                n_questions=(
+                    n_long_context_qa
+                    if n_long_context_qa is not None
+                    else self._config.n_long_context_qa_per_epoch
+                ),
+                epoch=epoch,
+                common_seed=common_seed,
+            )
+        elif mode == "science":
+            scored_results = self._run_test_science_epoch(
+                prepared,
+                n_samples=(
+                    n_multiple_choice
+                    if n_multiple_choice is not None
+                    else self._config.qualification_multiple_choice_per_epoch
+                ),
+                epoch=epoch,
+                common_seed=common_seed,
+            )
+        else:
+            raise ValueError(f"unknown test mode: {mode}")
+
+        results = {**rejected_results, **scored_results}
+        self._log_results_table(results, full_eval_miners=set(scored_results))
+        self._log(
+            f"test mode {mode}: complete; scores were not written to chain"
+        )
+        return results
+
     def _prepare_staged_submissions(
         self,
         pointers: dict[str, MinerSubmissionPointer],
@@ -2833,10 +3104,22 @@ class EpochLoop:
         n_problems: int | None = None,
         batch: list[ProblemInstance] | None = None,
         n_long_context_qa: int | None = None,
+        n_multiple_choice: int | None = None,
         epoch_batch: EpochBatch | None = None,
         epoch: int | None = None,
         common_seed: str | None = None,
+        test_mode: str | None = None,
     ) -> dict[str, MinerEpochResult]:
+        if test_mode is not None:
+            return self._run_test_epoch(
+                pointers,
+                mode=test_mode,
+                n_problems=n_problems,
+                n_long_context_qa=n_long_context_qa,
+                n_multiple_choice=n_multiple_choice,
+                epoch=0 if epoch is None else epoch,
+                common_seed=common_seed,
+            )
         if epoch_batch is None:
             if batch is not None:
                 epoch_batch = EpochBatch(math=batch, long_context_qa=[])
