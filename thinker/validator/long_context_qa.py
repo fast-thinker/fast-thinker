@@ -6,7 +6,7 @@ import re
 import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from typing import Protocol
+from typing import Any, Protocol
 
 from tqdm.auto import tqdm
 
@@ -18,37 +18,48 @@ logger = logging.getLogger(__name__)
 MINER_SYSTEM_PROMPT = (
     "You answer questions using a large external knowledge base you cannot see "
     "directly until you search.\n\n"
-    "Tool available to you:\n"
-    "- Retrieval search: first emit exactly one query wrapped as "
-    "<search>your query</search> and then stop -- do not write anything else after "
-    "</search>. The validator will run the search and insert the results as an "
-    "<information>...</information> block immediately after your </search> tag, "
-    "then let you continue the same response from there.\n\n"
     "Rules:\n"
-    "- You must issue exactly one <search> call before answering.\n"
-    "- After the injected <information> block, answer the question directly.\n"
+    "- You must call the search tool exactly once before answering.\n"
+    "- After the search tool returns evidence, answer the question directly.\n"
     "- Put the final answer in LaTeX boxed form, for example \\boxed{Ada Lovelace}.\n"
     "- Do not write anything after the final boxed answer.\n"
     "- All generated tokens count toward your completion length.\n"
-    "- Never emit <information> or </information> tags yourself; only the "
-    "validator inserts that block.\n"
-    "- Never fabricate facts, sources, or search results.\n\n"
-    "One-shot format example:\n"
-    "Question:\n"
-    "Which scientist proposed the uncertainty principle?\n\n"
-    "Your first response:\n"
-    "<search>scientist proposed uncertainty principle</search>\n\n"
-    "Validator-injected context after your search:\n"
-    "<information>\n"
-    "Doc 1. Title: Quantum mechanics overview\n"
-    "Text: Quantum mechanics studies atomic and subatomic systems.\n\n"
-    "Doc 2. Title: Werner Heisenberg\n"
-    "Text: Werner Heisenberg formulated the uncertainty principle in 1927.\n"
-    "</information>\n\n"
-    "Your final response:\n"
-    "\\boxed{Werner Heisenberg}"
+    "- Do not call the search tool a second time.\n"
+    "- Never fabricate facts, sources, or search results."
 )
 
+SEARCH_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "search",
+        "description": (
+            "Search the external knowledge base for evidence needed to answer "
+            "the question."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "A concise retrieval query for the needed evidence.",
+                }
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+}
+SEARCH_TOOLS = [SEARCH_TOOL]
+TOOL_CALL_END = "</tool_call>"
+TOOL_CALL_RE = re.compile(
+    r"<tool_call>\s*<function=(?P<name>[^>\s]+)>\s*"
+    r"(?P<body>.*?)</function>\s*</tool_call>",
+    re.DOTALL | re.IGNORECASE,
+)
+TOOL_PARAMETER_RE = re.compile(
+    r"<parameter=(?P<name>[^>\s]+)>\s*(?P<value>.*?)\s*</parameter>",
+    re.DOTALL | re.IGNORECASE,
+)
 SEARCH_RE = re.compile(r"<search>(.*?)</search>", re.DOTALL | re.IGNORECASE)
 LOOSE_SEARCH_RE = re.compile(r"<search>(.*?)<search>", re.DOTALL | re.IGNORECASE)
 BOXED_START_RE = re.compile(r"\\boxed\s*\{")
@@ -100,23 +111,25 @@ class LongContextInferenceBackend(Protocol):
 
     def generate_original_messages_batch(
         self,
-        messages_list: list[list[dict[str, str]]],
+        messages_list: list[list[dict[str, Any]]],
         *,
         max_new_tokens_list: list[int | None] | None = None,
         enable_thinking: bool = True,
         stop: list[str] | None = None,
         continue_final_message: bool = False,
+        tools: list[dict[str, Any]] | None = None,
     ) -> list[tuple[str, int]]:
         ...
 
     def generate_for_miners_messages_batch(
         self,
-        requests: list[tuple[str, dict[str, bytes], list[dict[str, str]]]],
+        requests: list[tuple[str, dict[str, bytes], list[dict[str, Any]]]],
         *,
         max_new_tokens_list: list[int | None] | None = None,
         enable_thinking: bool = True,
         stop: list[str] | None = None,
         continue_final_message: bool = False,
+        tools: list[dict[str, Any]] | None = None,
     ) -> list[tuple[str, int]]:
         ...
 
@@ -188,7 +201,7 @@ class _BatchedMinerAnswerState:
     final_answers: dict[str, list[str | None]]
     completion_lens: dict[str, list[int]]
     search_queries: dict[str, list[str | None]]
-    followup_requests: list[tuple[str, dict[str, bytes], list[dict[str, str]]]]
+    followup_requests: list[tuple[str, dict[str, bytes], list[dict[str, Any]]]]
     followup_budgets: list[int]
     followup_positions: list[tuple[str, int, int]]
 
@@ -232,10 +245,21 @@ def parse_judgement(text: str) -> bool:
 
 
 def parse_search_query(text: str) -> str | None:
-    match = SEARCH_RE.search(text) or LOOSE_SEARCH_RE.search(text)
-    if not match:
+    tool_match = TOOL_CALL_RE.search(text)
+    if tool_match and tool_match.group("name").strip().casefold() == "search":
+        parameters = {
+            match.group("name").strip().casefold(): match.group("value").strip()
+            for match in TOOL_PARAMETER_RE.finditer(tool_match.group("body"))
+        }
+        query = parameters.get("query", "")
+        return query or None
+
+    # Keep accepting the old textual form for adapters trained on the previous
+    # protocol, though the active prompt and chat template use native tools.
+    legacy_match = SEARCH_RE.search(text) or LOOSE_SEARCH_RE.search(text)
+    if not legacy_match:
         return None
-    query = match.group(1).strip()
+    query = legacy_match.group(1).strip()
     return query or None
 
 
@@ -305,24 +329,6 @@ def strip_untracked_spans(text: str) -> str:
     re-tokenizing or deleting model-controlled spans.
     """
     return text
-
-
-def inject_information_after_search(text: str, information_block: str) -> str:
-    match = SEARCH_RE.search(text)
-    if match:
-        return f"{text[:match.end()]}{information_block}{text[match.end():]}"
-    return f"{text.rstrip()}{information_block}"
-
-
-def replace_search_query(text: str, search_query: str) -> str:
-    """Replace the parsed query while preserving any preceding reasoning."""
-    match = SEARCH_RE.search(text)
-    if match:
-        return f"{text[:match.start(1)]}{search_query}{text[match.end(1):]}"
-    loose_match = LOOSE_SEARCH_RE.search(text)
-    if loose_match:
-        return f"{text[:loose_match.start()]}<search>{search_query}</search>"
-    return f"<search>{search_query}</search>"
 
 
 class LongContextQAEvaluator:
@@ -431,11 +437,13 @@ class LongContextQAEvaluator:
 
     def _generate_original_messages_with_budgets(
         self,
-        messages_list: list[list[dict[str, str]]],
+        messages_list: list[list[dict[str, Any]]],
         budgets: list[int],
         *,
         enable_thinking: bool = True,
+        stop: list[str] | None = None,
         continue_final_message: bool = False,
+        tools: list[dict[str, Any]] | None = None,
         progress_label: str = "long-context original generation",
     ) -> list[tuple[str, int]]:
         if len(messages_list) != len(budgets):
@@ -455,7 +463,9 @@ class LongContextQAEvaluator:
                     chunk_messages,
                     max_new_tokens_list=[budget] * len(chunk_messages),
                     enable_thinking=enable_thinking,
+                    stop=stop,
                     continue_final_message=continue_final_message,
+                    tools=tools,
                 )
                 if len(chunk_completions) != len(indexes):
                     raise ValueError(
@@ -534,10 +544,12 @@ class LongContextQAEvaluator:
         self,
         miner_id: str,
         adapter_files: dict[str, bytes],
-        messages_list: list[list[dict[str, str]]],
+        messages_list: list[list[dict[str, Any]]],
         budgets: list[int],
         *,
+        stop: list[str] | None = None,
         continue_final_message: bool = False,
+        tools: list[dict[str, Any]] | None = None,
         progress_label: str = "miner long-context generation",
     ) -> list[tuple[str, int]]:
         if len(messages_list) != len(budgets):
@@ -560,7 +572,9 @@ class LongContextQAEvaluator:
                 chunk_completions = self._inference.generate_for_miners_messages_batch(
                     requests,
                     max_new_tokens_list=[budget] * len(chunk_messages),
+                    stop=stop,
                     continue_final_message=continue_final_message,
+                    tools=tools,
                 )
                 if len(chunk_completions) != len(indexes):
                     raise ValueError("miner must return exactly one response per message")
@@ -786,29 +800,42 @@ class LongContextQAEvaluator:
         miners: list[tuple[str, dict[str, bytes]]],
         prompts: list[str],
         originals: list[LongContextAnswer],
-    ) -> tuple[list[tuple[str, dict[str, bytes], str]], list[int]]:
+    ) -> tuple[
+        list[tuple[str, dict[str, bytes], list[dict[str, Any]]]],
+        list[int],
+    ]:
         budgets = [self._search_budget() for _original in originals]
-        requests: list[tuple[str, dict[str, bytes], str]] = []
+        requests: list[
+            tuple[str, dict[str, bytes], list[dict[str, Any]]]
+        ] = []
         request_budgets: list[int] = []
         for miner_id, adapter_files in miners:
             for prompt, budget in zip(prompts, budgets):
-                requests.append((miner_id, adapter_files, prompt))
+                requests.append(
+                    (
+                        miner_id,
+                        adapter_files,
+                        self._build_initial_search_messages(prompt),
+                    )
+                )
                 request_budgets.append(budget)
         return requests, request_budgets
 
     def _generate_batched_first_pass(
         self,
-        requests: list[tuple[str, dict[str, bytes], str]],
+        requests: list[
+            tuple[str, dict[str, bytes], list[dict[str, Any]]]
+        ],
         budgets: list[int],
     ) -> list[tuple[str, int]]:
         with self._progress(
             len(requests), "miner long-context first pass"
         ) as progress:
-            completions = self._inference.generate_for_miners_batch(
+            completions = self._inference.generate_for_miners_messages_batch(
                 requests,
                 max_new_tokens_list=budgets,
-                stop=["</search>"],
-                system_prompt=MINER_SYSTEM_PROMPT,
+                stop=[TOOL_CALL_END],
+                tools=SEARCH_TOOLS,
             )
             progress.update(len(requests))
         if len(completions) != len(requests):
@@ -857,7 +884,7 @@ class LongContextQAEvaluator:
                 if search_query is None:
                     self._warn_parse_failure(
                         "miner-first-pass",
-                        "missing <search>...</search>",
+                        "missing search tool call",
                         source_label=miner_id,
                         item_index=idx,
                         text=first_response,
@@ -890,7 +917,7 @@ class LongContextQAEvaluator:
             final_completions = self._inference.generate_for_miners_messages_batch(
                 state.followup_requests,
                 max_new_tokens_list=state.followup_budgets,
-                continue_final_message=True,
+                tools=SEARCH_TOOLS,
             )
             progress.update(len(state.followup_requests))
         if len(final_completions) != len(state.followup_requests):
@@ -1133,12 +1160,12 @@ class LongContextQAEvaluator:
             return []
         prompts = [self._build_miner_prompt(instance.question) for instance in instances]
         first_budgets = [self._search_budget() for _instance in instances]
-        first_completions = self._generate_original_with_budgets(
-            prompts,
+        first_completions = self._generate_original_messages_with_budgets(
+            [self._build_initial_search_messages(prompt) for prompt in prompts],
             first_budgets,
             enable_thinking=True,
-            stop=["</search>"],
-            system_prompt=MINER_SYSTEM_PROMPT,
+            stop=[TOOL_CALL_END],
+            tools=SEARCH_TOOLS,
             progress_label="baseline long-context search first pass",
         )
         if len(first_completions) != len(instances):
@@ -1165,7 +1192,7 @@ class LongContextQAEvaluator:
             if search_query is None:
                 self._warn_parse_failure(
                     "baseline-first-pass",
-                    "missing <search>...</search>",
+                    "missing search tool call",
                     source_label="baseline",
                     item_index=idx,
                     text=first_response,
@@ -1188,7 +1215,7 @@ class LongContextQAEvaluator:
                 followup_prompts,
                 followup_budgets,
                 enable_thinking=True,
-                continue_final_message=True,
+                tools=SEARCH_TOOLS,
                 progress_label="baseline long-context final answers",
             )
             if len(final_completions) != len(followup_prompts):
@@ -1233,23 +1260,45 @@ class LongContextQAEvaluator:
         prompt: str,
         first_response: str,
         search_query: str,
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, Any]]:
         hits = self._retriever.search(
             search_query, topk=self._config.answer_context_topk
         )
         information = format_hits(
             hits, max_chars_per_doc=self._config.max_chars_per_doc
         )
-        information_block = f"<information>{information}</information>"
-        bounded_response = replace_search_query(first_response.strip(), search_query)
-        response_with_information = inject_information_after_search(
-            bounded_response,
-            information_block,
+        tool_match = TOOL_CALL_RE.search(first_response)
+        assistant_content = (
+            first_response[: tool_match.start()].strip() if tool_match else ""
         )
         return [
             {"role": "system", "content": MINER_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
-            {"role": "assistant", "content": response_with_information},
+            {
+                "role": "assistant",
+                "content": assistant_content,
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "search",
+                            "arguments": {"query": search_query},
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "name": "search",
+                "content": information,
+            },
+        ]
+
+    @staticmethod
+    def _build_initial_search_messages(prompt: str) -> list[dict[str, Any]]:
+        return [
+            {"role": "system", "content": MINER_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
         ]
 
     def _truncate_search_query(self, query: str) -> str:
@@ -1285,13 +1334,13 @@ class LongContextQAEvaluator:
             raise ValueError("originals must match instances")
         prompts = [self._build_miner_prompt(instance.question) for instance in instances]
         first_budgets = [self._search_budget() for _original in originals]
-        first_completions = self._generate_miner_with_budgets(
+        first_completions = self._generate_miner_messages_with_budgets(
             miner_id,
             adapter_files,
-            prompts,
+            [self._build_initial_search_messages(prompt) for prompt in prompts],
             first_budgets,
-            stop=["</search>"],
-            system_prompt=MINER_SYSTEM_PROMPT,
+            stop=[TOOL_CALL_END],
+            tools=SEARCH_TOOLS,
             progress_label=f"miner {miner_id} long-context first pass",
         )
         if len(first_completions) != len(instances):
@@ -1316,7 +1365,7 @@ class LongContextQAEvaluator:
             if search_query is None:
                 self._warn_parse_failure(
                     "miner-first-pass",
-                    "missing <search>...</search>",
+                    "missing search tool call",
                     source_label=miner_id,
                     item_index=idx,
                     text=first_response,
@@ -1340,7 +1389,7 @@ class LongContextQAEvaluator:
                 adapter_files,
                 followup_prompts,
                 followup_budgets,
-                continue_final_message=True,
+                tools=SEARCH_TOOLS,
                 progress_label=f"miner {miner_id} long-context final answers",
             )
             if len(final_completions) != len(followup_prompts):
@@ -1483,13 +1532,13 @@ __all__ = [
     "LongContextQAEvaluator",
     "LongContextQAInstance",
     "MINER_SYSTEM_PROMPT",
+    "SEARCH_TOOLS",
+    "TOOL_CALL_END",
     "extract_final_answer",
-    "inject_information_after_search",
     "parse_generated_qa",
     "parse_judgement",
     "parse_document_indices",
     "parse_search_query",
-    "replace_search_query",
     "normalize_answer",
     "strip_untracked_spans",
 ]

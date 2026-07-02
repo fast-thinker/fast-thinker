@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 _PINNED_REVISION_RE = re.compile(r"[0-9a-fA-F]{40,64}")
 
 
-def _chat_template_kwargs(enable_thinking: bool) -> dict[str, bool]:
+def _chat_template_kwargs(enable_thinking: bool) -> dict[str, Any]:
     return {"enable_thinking": bool(enable_thinking)}
 
 
@@ -260,10 +260,11 @@ class BaseModelServer:
 
     def _chat_token_ids(
         self,
-        messages_list: list[list[dict[str, str]]],
+        messages_list: list[list[dict[str, Any]]],
         *,
         enable_thinking: bool = True,
         continue_final_message: bool = False,
+        tools: list[dict[str, Any]] | None = None,
     ) -> list[list[int]]:
         token_ids_list: list[list[int]] = []
         for messages in messages_list:
@@ -272,6 +273,8 @@ class BaseModelServer:
                 kwargs = _chat_template_kwargs(enable_thinking)
                 if continue_final_message:
                     kwargs["continue_final_message"] = True
+                if tools is not None:
+                    kwargs["tools"] = tools
                 tokenized = self._tokenizer.apply_chat_template(
                     messages,
                     tokenize=True,
@@ -279,18 +282,21 @@ class BaseModelServer:
                     **kwargs,
                 )
             except TypeError:
-                if continue_final_message:
+                if continue_final_message or tools is not None:
                     raise RuntimeError(
-                        "tokenizer does not support continuing the final assistant "
-                        "message; cannot inject retrieval output as an in-progress "
-                        "tool result"
+                        "tokenizer chat template does not support the requested "
+                        "continuation or native tool definitions"
                     ) from None
                 tokenized = self._tokenizer.apply_chat_template(
                     messages,
                     tokenize=True,
                     add_generation_prompt=add_generation_prompt,
                 )
-            except Exception:
+            except Exception as exc:
+                if continue_final_message or tools is not None:
+                    raise RuntimeError(
+                        "tokenizer failed to render chat history with native tools"
+                    ) from exc
                 tokenized = self._tokenizer.encode(messages[0]["content"])
             try:
                 token_ids = self._normalize_token_ids(tokenized)
@@ -299,6 +305,8 @@ class BaseModelServer:
                     kwargs = _chat_template_kwargs(enable_thinking)
                     if continue_final_message:
                         kwargs["continue_final_message"] = True
+                    if tools is not None:
+                        kwargs["tools"] = tools
                     rendered = self._tokenizer.apply_chat_template(
                         messages,
                         tokenize=False,
@@ -306,11 +314,10 @@ class BaseModelServer:
                         **kwargs,
                     )
                 except TypeError:
-                    if continue_final_message:
+                    if continue_final_message or tools is not None:
                         raise RuntimeError(
-                            "tokenizer does not support continuing the final assistant "
-                            "message; cannot inject retrieval output as an in-progress "
-                            "tool result"
+                            "tokenizer chat template does not support the requested "
+                            "continuation or native tool definitions"
                         ) from None
                     rendered = self._tokenizer.apply_chat_template(
                         messages,
@@ -346,10 +353,11 @@ class BaseModelServer:
 
     def count_message_tokens(
         self,
-        messages_list: list[list[dict[str, str]]],
+        messages_list: list[list[dict[str, Any]]],
         *,
         enable_thinking: bool = True,
         continue_final_message: bool = False,
+        tools: list[dict[str, Any]] | None = None,
     ) -> list[int]:
         return [
             len(ids)
@@ -357,6 +365,7 @@ class BaseModelServer:
                 messages_list,
                 enable_thinking=enable_thinking,
                 continue_final_message=continue_final_message,
+                tools=tools,
             )
         ]
 
@@ -462,11 +471,12 @@ class BaseModelServer:
 
     def generate_original_messages_batch(
         self,
-        messages_list: list[list[dict[str, str]]],
+        messages_list: list[list[dict[str, Any]]],
         sampling_params_list: list[Any],
         *,
         enable_thinking: bool = True,
         continue_final_message: bool = False,
+        tools: list[dict[str, Any]] | None = None,
     ) -> list[GenerationResult]:
         if len(messages_list) != len(sampling_params_list):
             raise ValueError("messages_list and sampling_params_list must align")
@@ -485,6 +495,7 @@ class BaseModelServer:
             messages_list,
             enable_thinking=enable_thinking,
             continue_final_message=continue_final_message,
+            tools=tools,
         )
         outputs = self._llm.generate(
             [{"prompt_token_ids": ids} for ids in token_ids_list],
@@ -500,11 +511,12 @@ class BaseModelServer:
 
     def generate_for_miners_messages_batch(
         self,
-        requests: list[tuple[str, dict[str, bytes], list[dict[str, str]]]],
+        requests: list[tuple[str, dict[str, bytes], list[dict[str, Any]]]],
         sampling_params_list: list[Any],
         *,
         enable_thinking: bool = True,
         continue_final_message: bool = False,
+        tools: list[dict[str, Any]] | None = None,
     ) -> list[GenerationResult]:
         if not requests:
             return []
@@ -529,6 +541,7 @@ class BaseModelServer:
             messages_list,
             enable_thinking=enable_thinking,
             continue_final_message=continue_final_message,
+            tools=tools,
         )
 
         with contextlib.ExitStack() as stack:
@@ -696,13 +709,14 @@ class VllmInferenceBackend:
 
     def _sampling_params_for_messages(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         sampling_params: Any | None = None,
         max_new_tokens: int | None = None,
         enable_thinking: bool = True,
         stop: list[str] | None = None,
         continue_final_message: bool = False,
+        tools: list[dict[str, Any]] | None = None,
     ) -> Any:
         base_sampling_params = (
             self._sampling_params if sampling_params is None else sampling_params
@@ -724,6 +738,7 @@ class VllmInferenceBackend:
             [messages],
             enable_thinking=enable_thinking,
             continue_final_message=continue_final_message,
+            tools=tools,
         )[0]
         remaining = self._max_total_tokens - prompt_len
         if remaining <= 0:
@@ -899,12 +914,13 @@ class VllmInferenceBackend:
 
     def generate_original_messages_batch(
         self,
-        messages_list: list[list[dict[str, str]]],
+        messages_list: list[list[dict[str, Any]]],
         *,
         max_new_tokens_list: list[int | None] | None = None,
         enable_thinking: bool = True,
         stop: list[str] | None = None,
         continue_final_message: bool = False,
+        tools: list[dict[str, Any]] | None = None,
     ) -> list[tuple[str, int]]:
         if not messages_list:
             return []
@@ -920,6 +936,7 @@ class VllmInferenceBackend:
                 enable_thinking=enable_thinking,
                 stop=stop,
                 continue_final_message=continue_final_message,
+                tools=tools,
             )
             for messages, budget in zip(messages_list, max_new_tokens_list)
         ]
@@ -929,17 +946,19 @@ class VllmInferenceBackend:
                 sampling_params_list,
                 enable_thinking=enable_thinking,
                 continue_final_message=continue_final_message,
+                tools=tools,
             )
         )
 
     def generate_for_miners_messages_batch(
         self,
-        requests: list[tuple[str, dict[str, bytes], list[dict[str, str]]]],
+        requests: list[tuple[str, dict[str, bytes], list[dict[str, Any]]]],
         *,
         max_new_tokens_list: list[int | None] | None = None,
         enable_thinking: bool = True,
         stop: list[str] | None = None,
         continue_final_message: bool = False,
+        tools: list[dict[str, Any]] | None = None,
     ) -> list[tuple[str, int]]:
         if not requests:
             return []
@@ -955,6 +974,7 @@ class VllmInferenceBackend:
                 enable_thinking=enable_thinking,
                 stop=stop,
                 continue_final_message=continue_final_message,
+                tools=tools,
             )
             for (_miner_uid, _adapter_files, messages), budget in zip(
                 requests, max_new_tokens_list
@@ -966,6 +986,7 @@ class VllmInferenceBackend:
                 sampling_params_list,
                 enable_thinking=enable_thinking,
                 continue_final_message=continue_final_message,
+                tools=tools,
             )
         )
 
