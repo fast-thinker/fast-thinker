@@ -160,6 +160,7 @@ class LongContextInferenceBackend(Protocol):
 @dataclass(frozen=True)
 class LongContextQAConfig:
     seed_context_topk: int = 5
+    baseline_context_topk: int = 5
     answer_context_topk: int = 100
     max_chars_per_doc: int | None = 2_000
     qa_generation_max_chars_per_doc: int | None = 800
@@ -1226,90 +1227,44 @@ class LongContextQAEvaluator:
     ) -> list[LongContextAnswer]:
         if not instances:
             return []
-        prompts = [self._build_miner_prompt(instance.question) for instance in instances]
-        first_budgets = [self._search_budget() for _instance in instances]
-        first_completions = self._generate_original_messages_with_budgets(
-            [self._build_initial_search_messages(prompt) for prompt in prompts],
-            first_budgets,
-            enable_thinking=True,
-            stop=[TOOL_CALL_END],
-            tools=SEARCH_TOOLS,
-            progress_label="baseline long-context search first pass",
+        hits_by_instance = self._retriever.search_batch(
+            [instance.question for instance in instances],
+            topk=max(1, int(self._config.baseline_context_topk)),
         )
-        if len(first_completions) != len(instances):
-            raise ValueError(
-                "original model must return exactly one first response per question"
-            )
-
-        final_answers: list[str | None] = [None] * len(instances)
-        completion_lens: list[int] = [0] * len(instances)
-        search_queries: list[str | None] = [None] * len(instances)
-        followup_indexes: list[int] = []
-        followup_prompts: list[list[dict[str, str]]] = []
-        followup_first_lens: list[int] = []
-        followup_budgets: list[int] = []
-
-        for idx, (prompt, (first_response, generated_tokens)) in enumerate(
-            zip(prompts, first_completions)
-        ):
-            first_len = max(0, int(generated_tokens))
-            search_query = parse_search_query(first_response)
-            if search_query is not None:
-                search_query = self._truncate_search_query(search_query)
-            search_queries[idx] = search_query
-            if search_query is None:
-                self._warn_parse_failure(
-                    "baseline-first-pass",
-                    "missing search tool call",
-                    source_label="baseline",
-                    item_index=idx,
-                    text=first_response,
-                )
-                final_answers[idx] = first_response
-                completion_lens[idx] = first_len
-                continue
-
-            remaining_budget = self._miner_budget(spent_tokens=first_len)
-            if remaining_budget <= 0:
-                final_answers[idx] = first_response
-                completion_lens[idx] = first_len
-                continue
-
-            followup_indexes.append(idx)
-            followup_first_lens.append(first_len)
-            followup_prompts.append(
-                self._build_search_followup_messages(
-                    prompt, first_response, search_query
-                )
-            )
-            followup_budgets.append(remaining_budget)
-
-        if followup_prompts:
-            final_completions = self._generate_original_messages_with_budgets(
-                followup_prompts,
-                followup_budgets,
-                enable_thinking=True,
-                progress_label="baseline long-context evidence selection",
-            )
-            if len(final_completions) != len(followup_prompts):
-                raise ValueError(
-                    "original model must return exactly one final response per followup"
-                )
-            for idx, first_len, (final_response, generated_tokens) in zip(
-                followup_indexes, followup_first_lens, final_completions
-            ):
-                final_len = max(0, int(generated_tokens))
-                final_answers[idx] = final_response
-                completion_lens[idx] = first_len + final_len
-
-        answers, _selections = self._resolve_evidence_selections(
-            instances,
-            final_answers,
-            completion_lens,
-            search_queries,
-            source_label="baseline",
+        if len(hits_by_instance) != len(instances):
+            raise ValueError("retriever must return one result list per baseline question")
+        prompts = [
+            self._build_evidence_answer_prompt(instance.question, hits)
+            for instance, hits in zip(instances, hits_by_instance)
+        ]
+        completions = self._generate_original(
+            prompts,
+            max_new_tokens=self._config.evidence_answer_max_new_tokens,
+            enable_thinking=False,
+            greedy=True,
+            progress_label="baseline long-context direct answering",
         )
-        return answers
+        if len(completions) != len(instances):
+            raise ValueError("original model must return exactly one answer per question")
+
+        candidates = [extract_final_answer(completion) for completion, _tokens in completions]
+        verified = self._verify_candidate_answers(
+            [
+                (instance.question, instance.gold_answer, candidate)
+                for instance, candidate in zip(instances, candidates)
+            ]
+        )
+        return [
+            LongContextAnswer(
+                text=candidate,
+                completion_len=max(0, int(generated_tokens)),
+                verified=is_verified,
+                has_boxed_answer=bool(candidate),
+            )
+            for candidate, (_completion, generated_tokens), is_verified in zip(
+                candidates, completions, verified
+            )
+        ]
 
     def _miner_budget(
         self,

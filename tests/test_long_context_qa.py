@@ -6,6 +6,7 @@ from contextlib import nullcontext
 from thinker.retrieval.bm25 import CorpusDocument, RetrievalHit
 from thinker.validator.long_context_qa import (
     MINER_SYSTEM_PROMPT,
+    LongContextAnswer,
     LongContextQAConfig,
     LongContextQAEvaluator,
     LongContextQAInstance,
@@ -26,9 +27,14 @@ def _hit(rank: int, title: str, text: str) -> RetrievalHit:
 class _Retriever:
     def __init__(self, hits: list[RetrievalHit]) -> None:
         self.hits = hits
+        self.batch_calls: list[tuple[list[str], int]] = []
 
     def search(self, _query: str, *, topk: int) -> list[RetrievalHit]:
         return self.hits[:topk]
+
+    def search_batch(self, queries: list[str], *, topk: int) -> list[list[RetrievalHit]]:
+        self.batch_calls.append((queries, topk))
+        return [self.hits[:topk] for _query in queries]
 
 
 class _Inference:
@@ -64,8 +70,9 @@ class LongContextEvidenceSelectionTest(unittest.TestCase):
             _hit(2, "Charles Babbage", "Charles Babbage designed the Analytical Engine."),
         ]
         self.inference = _Inference()
+        self.retriever = _Retriever(self.hits)
         self.evaluator = LongContextQAEvaluator(
-            retriever=_Retriever(self.hits),
+            retriever=self.retriever,
             inference=self.inference,
             config=LongContextQAConfig(answer_context_topk=2),
         )
@@ -123,6 +130,28 @@ class LongContextEvidenceSelectionTest(unittest.TestCase):
         self.assertFalse(answers[0].verified)
         self.assertEqual(self.inference.answer_prompts, [])
 
+    def test_empty_or_malformed_selection_scores_negative_one(self) -> None:
+        invalid_outputs = [r"\boxed{}", "1", r"\boxed{document one}", r"\boxed{1} trailing"]
+        instances = [self.instance] * len(invalid_outputs)
+        answers, selections = self.evaluator._resolve_evidence_selections(
+            instances,
+            invalid_outputs,
+            [1] * len(invalid_outputs),
+            ["first programmer"] * len(invalid_outputs),
+            source_label="test-miner",
+        )
+
+        rewards = self.evaluator._batched_answer_rewards(
+            ["miner"],
+            [LongContextAnswer("Ada Lovelace", 4, True, True)] * len(invalid_outputs),
+            {"miner": answers},
+        )
+
+        self.assertEqual(selections, [()] * len(invalid_outputs))
+        self.assertTrue(all(not answer.verified for answer in answers))
+        self.assertEqual(rewards["miner"], [-1.0] * len(invalid_outputs))
+        self.assertEqual(self.inference.answer_prompts, [])
+
     def test_document_index_parser_enforces_bounds_and_limit(self) -> None:
         self.assertEqual(
             parse_document_indices(r"\boxed{2,1,2}", max_index=2, max_selected=2),
@@ -133,6 +162,40 @@ class LongContextEvidenceSelectionTest(unittest.TestCase):
         )
         self.assertIsNone(
             parse_document_indices(r"\boxed{1,2}", max_index=2, max_selected=1)
+        )
+
+    def test_baseline_directly_retrieves_top_five_and_answers(self) -> None:
+        answer = self.evaluator.score_original_batch([self.instance])[0]
+
+        self.assertEqual(
+            self.retriever.batch_calls,
+            [([self.instance.question], 5)],
+        )
+        self.assertTrue(answer.verified)
+        self.assertEqual(answer.text, "Ada Lovelace")
+        self.assertEqual(answer.completion_len, 4)
+        self.assertEqual(len(self.inference.answer_prompts), 1)
+
+    def test_peer_rewards_do_not_compare_against_baseline(self) -> None:
+        miner_answers = {
+            "short": [LongContextAnswer("1", 10, True, True)],
+            "long": [LongContextAnswer("1", 30, True, True)],
+            "wrong": [LongContextAnswer("", 1, False, False)],
+        }
+        baseline_correct = [LongContextAnswer("Ada Lovelace", 4, True, True)]
+        baseline_wrong = [LongContextAnswer("", 400, False, False)]
+
+        correct_baseline_rewards = self.evaluator._batched_answer_rewards(
+            list(miner_answers), baseline_correct, miner_answers
+        )
+        wrong_baseline_rewards = self.evaluator._batched_answer_rewards(
+            list(miner_answers), baseline_wrong, miner_answers
+        )
+
+        self.assertEqual(correct_baseline_rewards, wrong_baseline_rewards)
+        self.assertEqual(
+            correct_baseline_rewards,
+            {"short": [1.5], "long": [1.0], "wrong": [-1.0]},
         )
 
 

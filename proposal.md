@@ -158,12 +158,12 @@ documents. The validator compares that answer with the gold answer, using
 normalized exact match first and the same no-thinking original model as a
 semantic-equivalence judge only when exact match fails.
 
-The frozen base model is measured with the same evidence-selection protocol:
-it searches, receives indexed retrieval results, selects `\boxed{indices}`, and
-then the no-thinking frozen model answers from those selected documents. This
-keeps baseline accuracy comparable with candidate long-context behavior, even
-though long-context candidate rewards are assigned by peer-relative efficiency
-among correct evidence selectors.
+For baseline measurement, BM25 searches with the original question directly and
+the frozen base model answers from the top five documents without generating a
+search query or evidence selection. Baseline correctness is retained for
+telemetry only. Long-context candidate rewards do not compare against baseline
+completion length or correctness; they use peer-relative efficiency among
+correct evidence selectors.
 
 ### 5.3 Shared and evaluator-specific problems
 
