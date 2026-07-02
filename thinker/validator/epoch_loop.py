@@ -1154,6 +1154,8 @@ class EpochLoop:
                 results[miner_id] = scored
             except Exception as exc:
                 errors[miner_id] = str(exc)
+        if results:
+            results = self._long_context.apply_peer_efficiency(results)
         self._alias_duplicate_adapter_outcomes(results, errors, aliases)
         return results, errors
 

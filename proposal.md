@@ -147,15 +147,21 @@ Full evaluation uses a broader reasoning workload. The current defaults are:
 - 20 generated math problems; and
 - 50 retrieval-backed long-context question-answering problems.
 
-Long-context problems are open-answer tasks rather than multiple choice. The
-candidate must end with `\boxed{answer}`. The validator first compares a
-normalized answer with the gold answer; non-exact answers are batch-judged for
-semantic equivalence by the frozen original model with thinking disabled.
+Long-context problems are open-answer tasks for the validator, but candidates
+do not answer them directly. A candidate must search once, receives indexed
+retrieval results, and must return the selected evidence documents as
+`\boxed{indices}` such as `\boxed{2,5}`. The frozen original model, with
+thinking disabled, then answers the question using only those selected
+documents. The validator compares that answer with the gold answer, using
+normalized exact match first and the same no-thinking original model as a
+semantic-equivalence judge only when exact match fails.
 
-The frozen base model answers the evaluation batch first. Each candidate then
-answers the same problems under comparable limits. This makes the score a
-measure of improvement over the common baseline rather than an isolated test
-result.
+The frozen base model is measured with the same evidence-selection protocol:
+it searches, receives indexed retrieval results, selects `\boxed{indices}`, and
+then the no-thinking frozen model answers from those selected documents. This
+keeps baseline accuracy comparable with candidate long-context behavior, even
+though long-context candidate rewards are assigned by peer-relative efficiency
+among correct evidence selectors.
 
 ### 5.3 Shared and evaluator-specific problems
 
@@ -187,27 +193,18 @@ flowchart TD
 
 ### 6.1 Correctness comes first
 
-Every problem is scored by comparing the candidate with the frozen base model.
-Let `T_candidate` be the candidate's completion-token count and `T_base` be the
-base model's completion-token count. For long-context QA, let `S` be `512` when
-the candidate uses retrieval search and `0` otherwise. All candidate-generated
-tokens count, including tokens inside `<think>` and `<search>`.
+Every problem is scored by comparing the candidate with the frozen base model or
+with peer candidates, depending on the task. All candidate-generated tokens
+count, including tokens inside `<think>` and `<search>`.
+
+For long-context QA, the candidate is scored on evidence selection rather than
+answer generation:
 
 | Result | Exact reward |
 | --- | --- |
-| Candidate does not return a valid `\boxed{answer}` | `0.0` |
-| Candidate is incorrect | `-1.0` |
-| Candidate is correct and the base model is incorrect | `+1.0` before the peer-efficiency adjustment in Section 6.2 |
-| Candidate and base model are both correct | `1 - (T_candidate / max(1, T_base + S))` |
-
-When both models are correct, a candidate using half as many tokens as the base
-model receives `0.5`. Equal token counts receive `0.0`. A candidate using more
-tokens than the base model receives a negative score. For example, if
-`T_base = 100`, then a correct candidate using `40` tokens receives:
-
-```text
-reward = 1 - (40 / 100) = 0.60
-```
+| Candidate does not search or does not return valid `\boxed{indices}` | `-1.0` |
+| Candidate-selected evidence leads the frozen model to an incorrect answer | `-1.0` |
+| Candidate-selected evidence leads the frozen model to a correct answer | Bounded peer-efficiency reward from Section 6.2 |
 
 This approach prevents short but incorrect answers from being rewarded. A model
 must first solve the problem; efficiency matters only after correctness has
@@ -215,30 +212,46 @@ been established.
 
 ### 6.2 Efficiency among correct candidates
 
-When several candidates correctly solve a problem that the base model misses,
-the evaluator compares the length of those correct completions. The shortest
-correct completion receives the highest reward, the longest receives the
-lowest, and answers in between receive proportional rewards.
-
-For correct candidates on the same problem, let `T_min` and `T_max` be the
-shortest and longest completion lengths. The adjusted reward is:
+Efficiency is a bounded bonus after correctness. If the frozen base model also
+solves the problem, a correct candidate is scored relative to the base model's
+completion length:
 
 ```text
-reward = 1 - ((T_candidate - T_min) / (T_max - T_min))
+efficiency = clamp((T_original - T_candidate) / max(1, T_original), -0.5, 0.5)
+reward     = 1.0 + 0.5 * efficiency
+```
+
+This gives correct answers a range from `0.75` to `1.25` when the base model is
+already correct. A shorter correct answer can help, but a verbose correct answer
+is still much better than an incorrect answer.
+
+When the frozen base model is wrong, correct candidates are compared with other
+correct candidates on the same problem. The shortest correct completion receives
+the highest efficiency bonus, the longest correct completion receives no
+efficiency bonus, and answers in between receive proportional bonus credit.
+
+For correct candidates on the same problem, let `T_min` and `T_max` be the
+shortest and longest completion lengths. The peer efficiency and adjusted reward
+are:
+
+```text
+peer_efficiency = 1 - ((T_candidate - T_min) / (T_max - T_min))
+reward          = 1.0 + 0.5 * peer_efficiency
 ```
 
 If only one candidate is correct, it receives the full reward. If all correct
-candidates use the same number of tokens, each receives `1.0`. Incorrect answers are not
-included in this efficiency comparison and keep their `-1.0` reward.
+candidates use the same number of tokens, each receives the full peer-efficiency
+reward of `1.5`. Incorrect answers are not included in this efficiency
+comparison and keep their `-1.0` reward.
 
 For example, if three correct candidates use `20`, `30`, and `50` tokens, their
 rewards are:
 
 | Completion tokens | Reward |
 | ---: | ---: |
-| `20` | `1.00` |
-| `30` | `0.67` |
-| `50` | `0.00` |
+| `20` | `1.50` |
+| `30` | `1.33` |
+| `50` | `1.00` |
 
 ### 6.3 Balanced batch score
 

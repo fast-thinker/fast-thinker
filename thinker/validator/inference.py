@@ -626,6 +626,7 @@ class VllmInferenceBackend:
         max_new_tokens: int | None,
         enable_thinking: bool = True,
         system_prompt: str | None = None,
+        stop: list[str] | None = None,
     ) -> list[tuple[str, int]]:
         return self._as_tuples(
             self._server.generate_original(
@@ -636,6 +637,7 @@ class VllmInferenceBackend:
                     max_new_tokens=max_new_tokens,
                     enable_thinking=enable_thinking,
                     system_prompt=system_prompt,
+                    stop=stop,
                 ),
                 enable_thinking=enable_thinking,
                 system_prompt=system_prompt,
@@ -649,6 +651,7 @@ class VllmInferenceBackend:
         max_new_tokens: int | None,
         enable_thinking: bool = True,
         system_prompt: str | None = None,
+        stop: list[str] | None = None,
     ) -> list[tuple[str, int]]:
         """Generate deterministic original-model output for dataset construction."""
         return self._as_tuples(
@@ -662,6 +665,7 @@ class VllmInferenceBackend:
                     max_new_tokens=max_new_tokens,
                     enable_thinking=enable_thinking,
                     system_prompt=system_prompt,
+                    stop=stop,
                 ),
                 enable_thinking=enable_thinking,
                 system_prompt=system_prompt,

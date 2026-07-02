@@ -1,6 +1,29 @@
 from __future__ import annotations
 
 
+EFFICIENCY_WEIGHT = 0.5
+EFFICIENCY_CLAMP = 0.5
+
+
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return min(upper, max(lower, value))
+
+
+def _baseline_efficiency_score(
+    *,
+    original_completion_len: int,
+    miner_completion_len: int,
+) -> float:
+    denominator = max(1, int(original_completion_len))
+    numerator = max(0, int(miner_completion_len))
+    savings_ratio = (denominator - numerator) / denominator
+    return _clamp(savings_ratio, -EFFICIENCY_CLAMP, EFFICIENCY_CLAMP)
+
+
+def _correct_reward(efficiency_score: float) -> float:
+    return 1.0 + (EFFICIENCY_WEIGHT * efficiency_score)
+
+
 def relative_reasoning_reward(
     *,
     original_verified: bool,
@@ -11,11 +34,14 @@ def relative_reasoning_reward(
     if not miner_verified:
         return -1.0
     if not original_verified:
-        return 1.0
+        return _correct_reward(1.0)
 
-    denominator = max(1, int(original_completion_len))
-    numerator = max(0, int(miner_completion_len))
-    return 1.0 - (numerator / denominator)
+    return _correct_reward(
+        _baseline_efficiency_score(
+            original_completion_len=original_completion_len,
+            miner_completion_len=miner_completion_len,
+        )
+    )
 
 
 def peer_completion_efficiency_rewards(
@@ -27,11 +53,10 @@ def peer_completion_efficiency_rewards(
 ) -> list[float]:
     """Apply peer-relative token efficiency when miners fix a baseline miss.
 
-    The ordinary reward gives every correct miner 1.0 when the original model
-    is wrong. In cross-miner batches we instead compare only the correct miners
-    for that same problem, min-max scale their completion lengths, and assign
-    1 - scaled_tokens. Incorrect or otherwise special-cased base rewards are
-    left untouched.
+    Correct miners are compared only with other correct miners for the same
+    problem. The shortest correct completion gets full efficiency credit and
+    the longest correct completion gets the base correct score. Incorrect
+    rewards are left untouched.
     """
     if not (
         len(miner_verified)
@@ -57,15 +82,20 @@ def peer_completion_efficiency_rewards(
     max_tokens = max(token_counts)
     if max_tokens == min_tokens:
         for index in correct_indexes:
-            rewards[index] = 1.0
+            rewards[index] = _correct_reward(1.0)
         return rewards
 
     for index in correct_indexes:
         scaled = (
             max(0, int(miner_completion_lens[index])) - min_tokens
         ) / (max_tokens - min_tokens)
-        rewards[index] = 1.0 - scaled
+        rewards[index] = _correct_reward(1.0 - scaled)
     return rewards
 
 
-__all__ = ["relative_reasoning_reward", "peer_completion_efficiency_rewards"]
+__all__ = [
+    "EFFICIENCY_CLAMP",
+    "EFFICIENCY_WEIGHT",
+    "peer_completion_efficiency_rewards",
+    "relative_reasoning_reward",
+]
