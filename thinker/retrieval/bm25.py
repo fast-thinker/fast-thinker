@@ -425,24 +425,39 @@ class BM25RetrievalService:
         return self.documents[rng.randrange(len(self.documents))]
 
     def search(self, query: str, *, topk: int = 10) -> list[RetrievalHit]:
-        if not query.strip():
-            return []
+        return self.search_batch([query], topk=topk)[0]
+
+    def search_batch(
+        self,
+        queries: Sequence[str],
+        *,
+        topk: int = 10,
+    ) -> list[list[RetrievalHit]]:
+        """Retrieve several queries in one bm25s call, preserving input order."""
+        if topk <= 0:
+            raise ValueError("topk must be greater than zero")
+
+        results: list[list[RetrievalHit]] = [[] for _ in queries]
+        nonempty = [(index, query) for index, query in enumerate(queries) if query.strip()]
+        if not nonempty:
+            return results
 
         topk = min(topk, len(self.documents))
-        query_tokens = self._bm25s.tokenize([query], stopwords=self.stopwords)
+        query_tokens = self._bm25s.tokenize(
+            [query for _, query in nonempty],
+            stopwords=self.stopwords,
+        )
         doc_indexes, scores = self._retriever.retrieve(query_tokens, k=topk)
-        hits: list[RetrievalHit] = []
-        for rank, (doc_index, score) in enumerate(
-            zip(doc_indexes[0], scores[0]), start=1
-        ):
-            hits.append(
+        for row, (result_index, _) in enumerate(nonempty):
+            results[result_index] = [
                 RetrievalHit(
-                    document=self.documents[int(doc_index)],
-                    score=float(score),
-                    rank=rank,
+                    document=self.documents[int(doc_index)], score=float(score), rank=rank
                 )
-            )
-        return hits
+                for rank, (doc_index, score) in enumerate(
+                    zip(doc_indexes[row], scores[row]), start=1
+                )
+            ]
+        return results
 
 
 def format_hits(hits: Iterable[RetrievalHit], *, max_chars_per_doc: int | None = None) -> str:

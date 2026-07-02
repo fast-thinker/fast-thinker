@@ -1,12 +1,28 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from thinker.retrieval.bm25 import BM25RetrievalService, CorpusDocument, RetrievalHit
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_MAX_REQUEST_BYTES = 256 * 1024
+DEFAULT_MAX_QUERIES = 32
+DEFAULT_MAX_QUERY_CHARS = 4096
+DEFAULT_MAX_TOPK = 100
+DEFAULT_MAX_TOTAL_HITS = 1000
+DEFAULT_MAX_CONCURRENT_REQUESTS = 2
+
+
+class RequestError(ValueError):
+    def __init__(self, message: str, *, status: int = 400):
+        super().__init__(message)
+        self.status = status
 
 
 def _document_payload(document: CorpusDocument) -> dict[str, Any]:
@@ -42,11 +58,8 @@ def retrieve_payload(
 ) -> dict[str, Any]:
     return {
         "result": [
-            hits_payload(
-                retriever.search(query, topk=topk),
-                return_scores=return_scores,
-            )
-            for query in queries
+            hits_payload(hits, return_scores=return_scores)
+            for hits in retriever.search_batch(queries, topk=topk)
         ]
     }
 
@@ -58,10 +71,52 @@ class RetrievalHTTPServer(ThreadingHTTPServer):
         retriever: BM25RetrievalService,
         *,
         default_topk: int = 50,
+        max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES,
+        max_queries: int = DEFAULT_MAX_QUERIES,
+        max_query_chars: int = DEFAULT_MAX_QUERY_CHARS,
+        max_topk: int = DEFAULT_MAX_TOPK,
+        max_total_hits: int = DEFAULT_MAX_TOTAL_HITS,
+        max_concurrent_requests: int = DEFAULT_MAX_CONCURRENT_REQUESTS,
     ):
+        if not 1 <= default_topk <= max_topk:
+            raise ValueError("default_topk must be between 1 and max_topk")
+        if min(
+            max_request_bytes,
+            max_queries,
+            max_query_chars,
+            max_topk,
+            max_total_hits,
+            max_concurrent_requests,
+        ) <= 0:
+            raise ValueError("retrieval server limits must be greater than zero")
         super().__init__(server_address, RetrievalRequestHandler)
         self.retriever = retriever
         self.default_topk = default_topk
+        self.max_request_bytes = max_request_bytes
+        self.max_queries = max_queries
+        self.max_query_chars = max_query_chars
+        self.max_topk = max_topk
+        self.max_total_hits = max_total_hits
+        self._worker_slots = threading.BoundedSemaphore(max_concurrent_requests + 1)
+        self._retrieval_slots = threading.BoundedSemaphore(max_concurrent_requests)
+
+    def process_request(self, request, client_address) -> None:
+        # Keep one small overflow slot available to parse a request and return
+        # a proper 503, while strictly bounding the number of handler threads.
+        if not self._worker_slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._worker_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._worker_slots.release()
 
 
 class RetrievalRequestHandler(BaseHTTPRequestHandler):
@@ -86,22 +141,56 @@ class RetrievalRequestHandler(BaseHTTPRequestHandler):
             if isinstance(queries, str):
                 queries = [queries]
             if not isinstance(queries, list) or not all(isinstance(q, str) for q in queries):
-                raise ValueError("queries must be a string list")
+                raise RequestError("queries must be a string list")
+            if len(queries) > self.server.max_queries:
+                raise RequestError(f"at most {self.server.max_queries} queries are allowed")
+            if any(len(query) > self.server.max_query_chars for query in queries):
+                raise RequestError(
+                    f"each query must be at most {self.server.max_query_chars} characters"
+                )
             topk = int(payload.get("topk") or self.server.default_topk)
+            if not 1 <= topk <= self.server.max_topk:
+                raise RequestError(f"topk must be between 1 and {self.server.max_topk}")
+            if len(queries) * topk > self.server.max_total_hits:
+                raise RequestError(
+                    f"queries * topk must not exceed {self.server.max_total_hits}"
+                )
             return_scores = bool(payload.get("return_scores", False))
-            response = retrieve_payload(
-                self.server.retriever,
-                queries=queries,
-                topk=topk,
-                return_scores=return_scores,
-            )
-        except Exception as exc:
+            if not self.server._retrieval_slots.acquire(blocking=False):
+                raise RequestError("retrieval server is busy", status=503)
+            try:
+                response = retrieve_payload(
+                    self.server.retriever,
+                    queries=queries,
+                    topk=topk,
+                    return_scores=return_scores,
+                )
+            finally:
+                self.server._retrieval_slots.release()
+        except RequestError as exc:
+            self._write_json({"error": str(exc)}, status=exc.status)
+            return
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
             self._write_json({"error": str(exc)}, status=400)
+            return
+        except Exception:
+            logger.exception("BM25 retrieval request failed")
+            self._write_json({"error": "retrieval failed"}, status=500)
             return
         self._write_json(response)
 
     def _read_json(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length", "0"))
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError as exc:
+            raise RequestError("invalid Content-Length") from exc
+        if length < 0:
+            raise RequestError("invalid Content-Length")
+        if length > self.server.max_request_bytes:
+            raise RequestError(
+                f"request body must be at most {self.server.max_request_bytes} bytes",
+                status=413,
+            )
         raw = self.rfile.read(length)
         if not raw:
             return {}
@@ -137,8 +226,24 @@ def start_retrieval_service(
     host: str = "127.0.0.1",
     port: int = 8765,
     default_topk: int = 50,
+    max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES,
+    max_queries: int = DEFAULT_MAX_QUERIES,
+    max_query_chars: int = DEFAULT_MAX_QUERY_CHARS,
+    max_topk: int = DEFAULT_MAX_TOPK,
+    max_total_hits: int = DEFAULT_MAX_TOTAL_HITS,
+    max_concurrent_requests: int = DEFAULT_MAX_CONCURRENT_REQUESTS,
 ) -> RetrievalServiceHandle:
-    server = RetrievalHTTPServer((host, port), retriever, default_topk=default_topk)
+    server = RetrievalHTTPServer(
+        (host, port),
+        retriever,
+        default_topk=default_topk,
+        max_request_bytes=max_request_bytes,
+        max_queries=max_queries,
+        max_query_chars=max_query_chars,
+        max_topk=max_topk,
+        max_total_hits=max_total_hits,
+        max_concurrent_requests=max_concurrent_requests,
+    )
     thread = threading.Thread(target=server.serve_forever, name="thinker-retrieval", daemon=True)
     thread.start()
     bound_host, bound_port = server.server_address

@@ -6,6 +6,13 @@ and multiple-choice reasoning tasks. The subnet rewards adapters that improve
 reasoning quality while keeping submissions compact and validator evaluation
 repeatable.
 
+For long-context QA, a candidate searches exactly once and receives retrieval
+results labeled `Doc 1`, `Doc 2`, and so on. It returns the smallest sufficient
+set of document ranks as a final boxed selection such as `\boxed{2,5}`; it does
+not answer the question itself. The validator then asks the frozen base model,
+with thinking disabled, to answer using only those selected documents and
+checks that answer against the gold answer.
+
 New or updated miner models mature on chain for six epochs (approximately
 eight hours) before validators include them in evaluation. Publishing another
 submission resets the waiting period.

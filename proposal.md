@@ -149,8 +149,10 @@ Full evaluation uses a broader reasoning workload. The current defaults are:
 
 Long-context problems are open-answer tasks for the validator, but candidates
 do not answer them directly. A candidate must search once, receives indexed
-retrieval results, and must return the selected evidence documents as
-`\boxed{indices}` such as `\boxed{2,5}`. The frozen original model, with
+retrieval results labeled by one-based retrieval rank (`Doc 1`, `Doc 2`, and so
+on), and must return the smallest sufficient set of evidence ranks as a final
+`\boxed{indices}` selection such as `\boxed{2,5}`. Nothing may follow the final
+box. The frozen original model, with
 thinking disabled, then answers the question using only those selected
 documents. The validator compares that answer with the gold answer, using
 normalized exact match first and the same no-thinking original model as a
@@ -195,7 +197,7 @@ flowchart TD
 
 Every problem is scored by comparing the candidate with the frozen base model or
 with peer candidates, depending on the task. All candidate-generated tokens
-count, including tokens inside `<think>` and `<search>`.
+count, including private reasoning and search-tool-call tokens.
 
 For long-context QA, the candidate is scored on evidence selection rather than
 answer generation:

@@ -10,6 +10,8 @@ htmlcov/
 tests/*
 !tests/
 !tests/test_relative_reward.py
+!tests/test_long_context_qa.py
+!tests/test_retrieval_server.py
 .venv/
 venv/
 
