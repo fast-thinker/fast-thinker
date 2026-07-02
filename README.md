@@ -64,6 +64,10 @@ CLI-required inputs: `--adapter-dir`, `--hf-repo`, and `HF_TOKEN` or
 `--hf-token`. Set `--wallet`, `--hotkey`, and `--network` explicitly for a real
 subnet run. `--netuid` defaults to `16`.
 
+Adapter bundles default to a `500 MiB` size limit, shared by miner submission
+and validator validation. Set `THINKER_MAX_ADAPTER_BYTES` on both sides only if
+the subnet policy intentionally changes.
+
 During submit, the CLI shows validators with valid encryption keys and requires
 an explicit recipient choice. Type `all` for every listed validator or enter a
 comma-separated UID list such as `1,2,3`. There is no default choice: blank or

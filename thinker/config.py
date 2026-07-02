@@ -48,7 +48,7 @@ class ThinkerConfig:
 
     max_lora_rank: int = field(default_factory=lambda: _env_int("THINKER_MAX_LORA_RANK", 128))
     max_adapter_bytes: int = field(
-        default_factory=lambda: _env_int("THINKER_MAX_ADAPTER_BYTES", 200 * 1024 * 1024)
+        default_factory=lambda: _env_int("THINKER_MAX_ADAPTER_BYTES", 500 * 1024 * 1024)
     )
     max_adapter_config_bytes: int = field(
         default_factory=lambda: _env_int("THINKER_MAX_ADAPTER_CONFIG_BYTES", 64 * 1024)
