@@ -15,15 +15,11 @@ from thinker.reward.relative import (
     relative_reasoning_reward,
 )
 
-NO_INFORMATION_OPTION = "There is no information to answer the question."
-
 MINER_SYSTEM_PROMPT = (
     "You are answering a multiple-choice question that may require evidence from a "
-    "large external knowledge base you cannot see directly. Do not guess -- ground "
-    "your choice in retrieved evidence whenever you are not already certain. One of "
-    "the options is always "
-    f'"{NO_INFORMATION_OPTION}" -- choose it only if none of the other options are '
-    "supported by what you know or what you retrieve.\n\n"
+    "large external knowledge base you cannot see directly. Select the best-supported "
+    "option, grounding your choice in retrieved evidence whenever you are not already "
+    "certain.\n\n"
     "Tool available to you:\n"
     "- Retrieval search: if you need evidence, emit exactly one query wrapped as "
     "<search>your query</search> and then stop -- do not write anything else after "
@@ -603,7 +599,7 @@ class LongContextQAEvaluator:
     def _build_mc_options(
         self, seed: str, gold_answer: str, distractors: tuple[str, ...]
     ) -> tuple[str, ...]:
-        options = list(distractors) + [gold_answer, NO_INFORMATION_OPTION]
+        options = list(distractors) + [gold_answer]
         rng = random.Random(f"{seed}:mc_shuffle")
         rng.shuffle(options)
         return tuple(options)
@@ -892,8 +888,6 @@ class LongContextQAEvaluator:
         chosen_text: str,
         gold_answer: str,
     ) -> float:
-        if chosen_text == NO_INFORMATION_OPTION:
-            return 0.0
         if chosen_text != gold_answer:
             return -1.0
         return relative_reasoning_reward(
@@ -1204,7 +1198,6 @@ __all__ = [
     "LongContextQAEvaluator",
     "LongContextQAInstance",
     "MINER_SYSTEM_PROMPT",
-    "NO_INFORMATION_OPTION",
     "extract_final_answer",
     "inject_information_after_search",
     "parse_generated_qa",
