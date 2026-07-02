@@ -163,7 +163,7 @@ class LongContextQAConfig:
     judge_max_new_tokens: int = 64
     original_answer_max_new_tokens: int = 4096
     miner_max_tokens: int = 32768
-    search_max_tokens: int = 512
+    search_max_tokens: int = 32768
     search_query_max_tokens: int = 512
     judge_candidate_max_chars: int = 512
     max_selected_documents: int = 5
@@ -893,6 +893,12 @@ class LongContextQAEvaluator:
                     state.completion_lens[miner_id][idx] = first_len
                     continue
 
+                remaining_budget = self._miner_budget(spent_tokens=first_len)
+                if remaining_budget <= 0:
+                    state.final_answers[miner_id][idx] = first_response
+                    state.completion_lens[miner_id][idx] = first_len
+                    continue
+
                 state.followup_positions.append((miner_id, idx, first_len))
                 state.followup_requests.append(
                     (
@@ -903,9 +909,7 @@ class LongContextQAEvaluator:
                         ),
                     )
                 )
-                state.followup_budgets.append(
-                    self._miner_budget(spent_tokens=first_len)
-                )
+                state.followup_budgets.append(remaining_budget)
         return state
 
     def _complete_batched_followups(self, state: _BatchedMinerAnswerState) -> None:
@@ -1201,6 +1205,12 @@ class LongContextQAEvaluator:
                 completion_lens[idx] = first_len
                 continue
 
+            remaining_budget = self._miner_budget(spent_tokens=first_len)
+            if remaining_budget <= 0:
+                final_answers[idx] = first_response
+                completion_lens[idx] = first_len
+                continue
+
             followup_indexes.append(idx)
             followup_first_lens.append(first_len)
             followup_prompts.append(
@@ -1208,7 +1218,7 @@ class LongContextQAEvaluator:
                     prompt, first_response, search_query
                 )
             )
-            followup_budgets.append(self._miner_budget(spent_tokens=first_len))
+            followup_budgets.append(remaining_budget)
 
         if followup_prompts:
             final_completions = self._generate_original_messages_with_budgets(
@@ -1244,7 +1254,7 @@ class LongContextQAEvaluator:
         spent_tokens: int = 0,
     ) -> int:
         budget = int(self._config.miner_max_tokens) - max(0, int(spent_tokens))
-        return max(1, budget)
+        return max(0, budget)
 
     def _search_budget(self) -> int:
         return max(
@@ -1374,6 +1384,12 @@ class LongContextQAEvaluator:
                 completion_lens[idx] = first_len
                 continue
 
+            remaining_budget = self._miner_budget(spent_tokens=first_len)
+            if remaining_budget <= 0:
+                final_answers[idx] = first_response
+                completion_lens[idx] = first_len
+                continue
+
             followup_indexes.append(idx)
             followup_first_lens.append(first_len)
             followup_prompts.append(
@@ -1381,7 +1397,7 @@ class LongContextQAEvaluator:
                     prompt, first_response, search_query
                 )
             )
-            followup_budgets.append(self._miner_budget(spent_tokens=first_len))
+            followup_budgets.append(remaining_budget)
 
         if followup_prompts:
             final_completions = self._generate_miner_messages_with_budgets(
