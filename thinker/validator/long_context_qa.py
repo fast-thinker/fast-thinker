@@ -19,8 +19,11 @@ MINER_SYSTEM_PROMPT = (
     "You answer questions using a large external knowledge base you cannot see "
     "directly until you search.\n\n"
     "Rules:\n"
-    "- You must call the search tool exactly once before answering.\n"
-    "- After the search tool returns evidence, answer the question directly.\n"
+    "- You must call the search tool exactly once, in your first assistant turn.\n"
+    "- After the search tool returns, it is unavailable. Never emit another tool call.\n"
+    "- Answer directly from the retrieved documents.\n"
+    "- If the retrieved documents do not contain enough information, return "
+    "exactly \\boxed{}.\n"
     "- Put the final answer in LaTeX boxed form, for example \\boxed{Ada Lovelace}.\n"
     "- Do not write anything after the final boxed answer.\n"
     "- All generated tokens count toward your completion length.\n"
@@ -270,9 +273,14 @@ def extract_final_answer(text: str) -> str:
     model completion passed here.  Consequently, miner-emitted information
     tags have no special parsing or accounting meaning.
     """
+    valid, answer = _parse_final_boxed_answer(text)
+    return answer if valid else ""
+
+
+def _parse_final_boxed_answer(text: str) -> tuple[bool, str]:
     matches = list(BOXED_START_RE.finditer(text))
     if not matches:
-        return ""
+        return False, ""
     match = matches[-1]
     index = match.end()
     depth = 1
@@ -286,13 +294,13 @@ def extract_final_answer(text: str) -> str:
             depth -= 1
             if depth == 0:
                 if text[index + 1 :].strip():
-                    return ""
-                return "".join(chars).strip()
+                    return False, ""
+                return True, "".join(chars).strip()
             chars.append(char)
         else:
             chars.append(char)
         index += 1
-    return ""
+    return False, ""
 
 
 def normalize_answer(text: str) -> str:
@@ -921,7 +929,6 @@ class LongContextQAEvaluator:
             final_completions = self._inference.generate_for_miners_messages_batch(
                 state.followup_requests,
                 max_new_tokens_list=state.followup_budgets,
-                tools=SEARCH_TOOLS,
             )
             progress.update(len(state.followup_requests))
         if len(final_completions) != len(state.followup_requests):
@@ -964,17 +971,31 @@ class LongContextQAEvaluator:
         *,
         source_label: str,
     ) -> tuple[list[LongContextAnswer], list[tuple[int, ...]]]:
-        answer_texts = [
-            extract_final_answer(str(response or "")) for response in raw_responses
+        parsed_answers = [
+            _parse_final_boxed_answer(str(response or "")) for response in raw_responses
         ]
+        has_boxed_answers = [valid for valid, _answer in parsed_answers]
+        answer_texts = [answer for _valid, answer in parsed_answers]
         verification_positions: list[int] = []
         verification_items: list[tuple[str, str, str]] = []
-        for index, (instance, response, search_query, answer_text) in enumerate(
-            zip(instances, raw_responses, search_queries, answer_texts)
+        for index, (
+            instance,
+            response,
+            search_query,
+            has_boxed_answer,
+            answer_text,
+        ) in enumerate(
+            zip(
+                instances,
+                raw_responses,
+                search_queries,
+                has_boxed_answers,
+                answer_texts,
+            )
         ):
             if search_query is None:
                 continue
-            if not answer_text:
+            if not has_boxed_answer:
                 self._warn_parse_failure(
                     "final-answer",
                     "missing final \\boxed{answer}",
@@ -982,6 +1003,8 @@ class LongContextQAEvaluator:
                     item_index=index,
                     text=str(response or ""),
                 )
+                continue
+            if not answer_text:
                 continue
             verification_positions.append(index)
             verification_items.append(
@@ -999,7 +1022,7 @@ class LongContextQAEvaluator:
                 text=answer_text,
                 completion_len=completion_len,
                 verified=verification_by_position.get(index, False),
-                has_boxed_answer=bool(answer_text),
+                has_boxed_answer=has_boxed_answers[index],
             )
             for index, (answer_text, completion_len) in enumerate(
                 zip(answer_texts, completion_lens)
@@ -1225,7 +1248,6 @@ class LongContextQAEvaluator:
                 followup_prompts,
                 followup_budgets,
                 enable_thinking=True,
-                tools=SEARCH_TOOLS,
                 progress_label="baseline long-context final answers",
             )
             if len(final_completions) != len(followup_prompts):
@@ -1405,7 +1427,6 @@ class LongContextQAEvaluator:
                 adapter_files,
                 followup_prompts,
                 followup_budgets,
-                tools=SEARCH_TOOLS,
                 progress_label=f"miner {miner_id} long-context final answers",
             )
             if len(final_completions) != len(followup_prompts):
