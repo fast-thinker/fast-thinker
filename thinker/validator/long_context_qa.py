@@ -70,7 +70,7 @@ def _log_snippet(text: str | None) -> str:
     snippet = " ".join(str(text or "").split())
     if len(snippet) <= LOG_SNIPPET_CHARS:
         return snippet
-    return f"{snippet[:LOG_SNIPPET_CHARS]}..."
+    return f"...{snippet[-LOG_SNIPPET_CHARS:]}"
 
 
 class LongContextInferenceBackend(Protocol):
