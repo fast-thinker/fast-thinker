@@ -149,7 +149,8 @@ class LongContextQAConfig:
     qa_generation_max_attempts: int = 3
     judge_max_new_tokens: int = 64
     original_answer_max_new_tokens: int = 4096
-    miner_max_tokens: int = 512
+    miner_max_tokens: int = 32768
+    search_max_tokens: int = 512
     search_query_max_tokens: int = 512
     judge_candidate_max_chars: int = 512
     max_selected_documents: int = 5
@@ -786,7 +787,7 @@ class LongContextQAEvaluator:
         prompts: list[str],
         originals: list[LongContextAnswer],
     ) -> tuple[list[tuple[str, dict[str, bytes], str]], list[int]]:
-        budgets = [self._miner_budget() for _original in originals]
+        budgets = [self._search_budget() for _original in originals]
         requests: list[tuple[str, dict[str, bytes], str]] = []
         request_budgets: list[int] = []
         for miner_id, adapter_files in miners:
@@ -1131,7 +1132,7 @@ class LongContextQAEvaluator:
         if not instances:
             return []
         prompts = [self._build_miner_prompt(instance.question) for instance in instances]
-        first_budgets = [self._miner_budget() for _instance in instances]
+        first_budgets = [self._search_budget() for _instance in instances]
         first_completions = self._generate_original_with_budgets(
             prompts,
             first_budgets,
@@ -1218,6 +1219,15 @@ class LongContextQAEvaluator:
         budget = int(self._config.miner_max_tokens) - max(0, int(spent_tokens))
         return max(1, budget)
 
+    def _search_budget(self) -> int:
+        return max(
+            1,
+            min(
+                int(self._config.search_max_tokens),
+                int(self._config.miner_max_tokens),
+            ),
+        )
+
     def _build_search_followup_messages(
         self,
         prompt: str,
@@ -1274,7 +1284,7 @@ class LongContextQAEvaluator:
         if len(originals) != len(instances):
             raise ValueError("originals must match instances")
         prompts = [self._build_miner_prompt(instance.question) for instance in instances]
-        first_budgets = [self._miner_budget() for _original in originals]
+        first_budgets = [self._search_budget() for _original in originals]
         first_completions = self._generate_miner_with_budgets(
             miner_id,
             adapter_files,

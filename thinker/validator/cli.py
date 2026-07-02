@@ -1402,11 +1402,17 @@ def _run_validator_loop(args: argparse.Namespace) -> int:
 
         long_context_evaluator = None
         if long_context_qa_count > 0:
-            from thinker.validator.long_context_qa import LongContextQAEvaluator
+            from thinker.validator.long_context_qa import (
+                LongContextQAConfig,
+                LongContextQAEvaluator,
+            )
 
             long_context_evaluator = LongContextQAEvaluator(
                 retriever=retrieval_handle.server.retriever,
                 inference=inference,
+                config=LongContextQAConfig(
+                    miner_max_tokens=args.max_new_tokens,
+                ),
                 show_progress=not args.no_generation_progress,
             )
             _status(
