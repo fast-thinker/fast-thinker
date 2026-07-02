@@ -117,6 +117,15 @@ class ThinkerConfig:
     k_rollouts: int = field(default_factory=lambda: _env_int("THINKER_K_ROLLOUTS", 2))
     min_coverage_per_band: int = field(default_factory=lambda: _env_int("THINKER_MIN_COVERAGE_PER_BAND", 1))
     n_difficulty_bands: int = field(default_factory=lambda: _env_int("THINKER_N_DIFFICULTY_BANDS", 4))
+    score_weight_math: float = field(
+        default_factory=lambda: _env_float("THINKER_SCORE_WEIGHT_MATH", 0.50)
+    )
+    score_weight_long_context_qa: float = field(
+        default_factory=lambda: _env_float("THINKER_SCORE_WEIGHT_LONG_CONTEXT_QA", 0.30)
+    )
+    score_weight_multiple_choice: float = field(
+        default_factory=lambda: _env_float("THINKER_SCORE_WEIGHT_MULTIPLE_CHOICE", 0.20)
+    )
 
     synthesized_enabled: bool = field(
         default_factory=lambda: _env_bool("THINKER_SYNTHESIZED_ENABLED", True)

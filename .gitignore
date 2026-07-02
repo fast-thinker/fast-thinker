@@ -7,6 +7,7 @@ __pycache__/
 coverage.xml
 htmlcov/
 .thinker/
+tests/
 .venv/
 venv/
 

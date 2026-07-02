@@ -69,6 +69,13 @@ def _positive_float(value: str) -> float:
     return parsed
 
 
+def _unit_interval_float(value: str) -> float:
+    parsed = float(value)
+    if not 0.0 <= parsed <= 1.0:
+        raise argparse.ArgumentTypeError("must be between 0 and 1")
+    return parsed
+
+
 def _resolve_paths(config: ThinkerConfig, args: argparse.Namespace) -> tuple[Path, Path, Path]:
     cache_dir = Path(args.retrieval_cache_dir or config.retrieval_cache_dir)
     corpus_raw = args.corpus_path or config.retrieval_corpus_path
@@ -304,6 +311,15 @@ def _add_run_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argum
         action="store_true",
         help="Run the epoch loop and compute scores without writing weights to chain. "
         "Useful for local testing with an unregistered hotkey.",
+    )
+    parser.add_argument(
+        "--burn-rate",
+        type=_unit_interval_float,
+        default=0.0,
+        help=(
+            "Fraction of on-chain weight assigned to burn UID 0; the remainder "
+            "is distributed among scored miners (default: 0.0)."
+        ),
     )
     parser.add_argument(
         "--key-path", default=_DEFAULT_KEY_PATH,
@@ -1246,6 +1262,7 @@ def _run_validator_loop(args: argparse.Namespace) -> int:
         _status(
             f"starting validator run: network={args.network}, netuid={args.netuid}, "
             f"mock={args.mock}, set_weights={not args.no_set_weights}, "
+            f"burn_rate={args.burn_rate}, "
             f"evaluation_delay_epochs={evaluation_delay_epochs}"
         )
         if not args.no_retrieval:
@@ -1299,7 +1316,12 @@ def _run_validator_loop(args: argparse.Namespace) -> int:
             _status("weight-setting disabled by --no-set-weights; scores will be computed but not written to chain")
         else:
             weight_setter = chain.PeriodicWeightSetter(
-                chain.BittensorWeightSetter(weight_subtensor, wallet, args.netuid),
+                chain.BittensorWeightSetter(
+                    weight_subtensor,
+                    wallet,
+                    args.netuid,
+                    burn_rate=args.burn_rate,
+                ),
                 interval_seconds=_WEIGHT_RETRY_SECONDS,
                 log=_status,
             )

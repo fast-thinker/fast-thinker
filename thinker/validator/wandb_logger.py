@@ -126,6 +126,14 @@ class WandbEpochLogger:
                     data[f"miner/{miner_hotkey}/correctness_score"] = (
                         result.correctness_score
                     )
+                for task, task_score in sorted(result.task_scores.items()):
+                    data[f"task/{task}/miner/{miner_hotkey}/score"] = task_score
+                for task, length in sorted(result.task_completion_len.items()):
+                    data[f"task/{task}/miner/{miner_hotkey}/completion_len"] = length
+                for task, correctness in sorted(result.task_correctness_score.items()):
+                    data[f"task/{task}/miner/{miner_hotkey}/correctness_score"] = (
+                        correctness
+                    )
                 scored_results.append(result)
 
         data["evaluation/miners_scored"] = len(scored_results)
@@ -156,6 +164,16 @@ class WandbEpochLogger:
                 data["original/completion_len"] = (
                     baseline_result.original_completion_len
                 )
+            for task, score in sorted(baseline_result.task_original_score.items()):
+                data[f"task/{task}/original/score"] = score
+            for task, correctness in sorted(
+                baseline_result.task_original_correctness_score.items()
+            ):
+                data[f"task/{task}/original/correctness_score"] = correctness
+            for task, length in sorted(
+                baseline_result.task_original_completion_len.items()
+            ):
+                data[f"task/{task}/original/completion_len"] = length
         if self._progress is not None and self._progress.get("epoch") == int(epoch):
             for stage_name, stage in self._progress["stages"].items():
                 if stage["status"] in {"pending", "waiting", "preparing", "evaluating"}:

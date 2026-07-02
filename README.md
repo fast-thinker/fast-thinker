@@ -84,7 +84,8 @@ Run validator scoring:
 thinker-validator run \
   --wallet validator-wallet \
   --hotkey validator-hotkey \
-  --evaluation-delay-epochs 6
+  --evaluation-delay-epochs 6 \
+  --burn-rate 0.9
 ```
 
 Required runtime input: `WANDB_API_KEY`. Set `--wallet` and `--hotkey` only when
@@ -96,6 +97,16 @@ configured in code.
 maturity delay for local testing. While submissions mature, the validator logs
 their remaining blocks and eligible epoch instead of reporting that no miner
 submissions exist.
+
+`--burn-rate` defaults to `0`. For example, `--burn-rate 0.9` assigns weight
+`0.9` to burn UID 0 and distributes the remaining `0.1` among scored miners in
+proportion to their scores. The accepted range is `0` through `1`, inclusive.
+
+Evaluation scores are averaged within each task type before the task types are
+combined. The default task weights are math `0.50`, long-context QA `0.30`, and
+multiple-choice `0.20`; set `THINKER_SCORE_WEIGHT_MATH`,
+`THINKER_SCORE_WEIGHT_LONG_CONTEXT_QA`, or
+`THINKER_SCORE_WEIGHT_MULTIPLE_CHOICE` to override them.
 
 ## Validator Chat
 

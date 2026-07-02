@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from thinker.submission.commitments import read_submission
-from thinker.validator.epoch_loop import MinerSubmissionPointer
+
+if TYPE_CHECKING:
+    from thinker.validator.epoch_loop import MinerSubmissionPointer
 
 
 # A replacement commitment receives a new chain block, resetting this delay.
@@ -71,6 +73,8 @@ def discover_miner_pointers(
     current_block: int | None = None,
     maturing_submissions: list[MaturingSubmission] | None = None,
 ) -> dict[str, MinerSubmissionPointer]:
+    from thinker.validator.epoch_loop import MinerSubmissionPointer
+
     if epoch_blocks <= 0:
         raise ValueError("epoch_blocks must be positive")
     if evaluation_delay_epochs < 0:
@@ -120,10 +124,20 @@ def discover_miner_pointers(
 
 
 class BittensorWeightSetter:
-    def __init__(self, subtensor: Any, wallet: Any, netuid: int):
+    def __init__(
+        self,
+        subtensor: Any,
+        wallet: Any,
+        netuid: int,
+        *,
+        burn_rate: float = 0.0,
+    ):
+        if not 0.0 <= burn_rate <= 1.0:
+            raise ValueError("burn_rate must be between 0 and 1")
         self._subtensor = subtensor
         self._wallet = wallet
         self._netuid = netuid
+        self._burn_rate = burn_rate
 
     def set_weights(self, scores: dict[str, float]) -> None:
         metagraph = self._subtensor.metagraph(self._netuid)
@@ -133,16 +147,28 @@ class BittensorWeightSetter:
             for hotkey, score in scores.items()
             if hotkey in hotkey_to_uid
         }
+        if self._burn_rate > 0.0:
+            # UID 0 is the burn destination. Exclude any evaluation score it
+            # may have so the configured burn remains an exact fraction.
+            clipped = {
+                hotkey: score
+                for hotkey, score in clipped.items()
+                if hotkey_to_uid[hotkey] != 0
+            }
         total = sum(clipped.values())
         uids: list[int] = []
         weights: list[float] = []
-        if total <= 0:
+        if total <= 0 or self._burn_rate == 1.0:
             uids.append(0)
             weights.append(1.0)
         else:
+            if self._burn_rate > 0.0:
+                uids.append(0)
+                weights.append(self._burn_rate)
+            miner_share = 1.0 - self._burn_rate
             for hotkey, score in clipped.items():
                 uids.append(hotkey_to_uid[hotkey])
-                weights.append(score / total)
+                weights.append(miner_share * score / total)
         result = self._subtensor.set_weights(
             wallet=self._wallet,
             netuid=self._netuid,

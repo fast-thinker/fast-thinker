@@ -4,8 +4,9 @@ import hashlib
 import sys
 import time
 import traceback
+from collections import defaultdict
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
 from tqdm.auto import tqdm
@@ -48,6 +49,10 @@ from thinker.validator.multiple_choice import (
     MultipleChoiceMinerResult,
     rollout_result as multiple_choice_rollout_result,
 )
+
+TASK_MATH = "math"
+TASK_LONG_CONTEXT_QA = "long_context_qa"
+TASK_MULTIPLE_CHOICE = "multiple_choice"
 
 
 @dataclass(frozen=True)
@@ -109,6 +114,12 @@ class MinerEpochResult:
     original_correctness_score: float | None = None
     original_completion_len: float | None = None
     telemetry_count: int = 0
+    task_scores: dict[str, float] = field(default_factory=dict)
+    task_completion_len: dict[str, float] = field(default_factory=dict)
+    task_correctness_score: dict[str, float] = field(default_factory=dict)
+    task_original_score: dict[str, float] = field(default_factory=dict)
+    task_original_correctness_score: dict[str, float] = field(default_factory=dict)
+    task_original_completion_len: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -251,33 +262,110 @@ class EpochLoop:
         coverage = "coverage-ok" if result.score.coverage_ok else "coverage-missing"
         return f"score={result.score.overall:.4f} ({coverage}; {result.score.reason or 'ok'})"
 
+    def _score_type_weights(self) -> dict[str, float]:
+        return {
+            TASK_MATH: max(0.0, float(self._config.score_weight_math)),
+            TASK_LONG_CONTEXT_QA: max(
+                0.0, float(self._config.score_weight_long_context_qa)
+            ),
+            TASK_MULTIPLE_CHOICE: max(
+                0.0, float(self._config.score_weight_multiple_choice)
+            ),
+        }
+
     @staticmethod
+    def _rollout_task(result: RolloutResult) -> str:
+        if result.track == TASK_LONG_CONTEXT_QA or result.band == TASK_LONG_CONTEXT_QA:
+            return TASK_LONG_CONTEXT_QA
+        if result.track == TASK_MULTIPLE_CHOICE or result.band == TASK_MULTIPLE_CHOICE:
+            return TASK_MULTIPLE_CHOICE
+        return TASK_MATH
+
+    @staticmethod
+    def _weighted_task_mean(
+        values: dict[str, float],
+        weights: dict[str, float],
+    ) -> float | None:
+        available = {
+            task: float(value)
+            for task, value in values.items()
+            if value is not None
+        }
+        if not available:
+            return None
+        total_weight = sum(max(0.0, weights.get(task, 0.0)) for task in available)
+        if total_weight <= 0:
+            return sum(available.values()) / len(available)
+        return sum(
+            value * max(0.0, weights.get(task, 0.0))
+            for task, value in available.items()
+        ) / total_weight
+
+    def _score_rollouts_by_task(
+        self,
+        results: list[RolloutResult],
+        *,
+        min_coverage_per_band: int,
+    ) -> tuple[StratifiedScore, dict[str, float]]:
+        by_task: dict[str, list[RolloutResult]] = defaultdict(list)
+        for result in results:
+            by_task[self._rollout_task(result)].append(result)
+        if not by_task:
+            return (
+                StratifiedScore(overall=0.0, per_band={}, coverage_ok=True, reason=None),
+                {},
+            )
+
+        task_scores: dict[str, float] = {}
+        per_band: dict[str, float] = {}
+        coverage_ok = True
+        reasons: list[str] = []
+        for task, task_results in sorted(by_task.items()):
+            if task == TASK_MATH:
+                score = stratified_score(
+                    task_results,
+                    min_coverage_per_band=min_coverage_per_band,
+                )
+            else:
+                score = stratified_score(
+                    task_results,
+                    min_coverage_per_band=1,
+                    required_bands={task},
+                )
+            task_scores[task] = score.overall
+            per_band[f"type/{task}"] = score.overall
+            per_band.update(
+                {
+                    f"{task}/{band}": value
+                    for band, value in sorted(score.per_band.items())
+                }
+            )
+            coverage_ok = coverage_ok and score.coverage_ok
+            if score.reason:
+                reasons.append(f"{task}: {score.reason}")
+
+        overall = self._weighted_task_mean(task_scores, self._score_type_weights())
+        return (
+            StratifiedScore(
+                overall=overall if overall is not None else 0.0,
+                per_band=per_band,
+                coverage_ok=coverage_ok,
+                reason="; ".join(reasons) or None,
+            ),
+            task_scores,
+        )
+
     def _scored_result(
+        self,
         miner_id: str,
         score: StratifiedScore,
         rollouts: list[RolloutResult],
+        task_scores: dict[str, float] | None = None,
     ) -> MinerEpochResult:
         """Attach dashboard telemetry without changing the scoring result."""
-        miner_lengths = [
-            result.miner_completion_len
-            for result in rollouts
-            if result.miner_completion_len is not None
-        ]
-        original_lengths = [
-            result.original_completion_len
-            for result in rollouts
-            if result.original_completion_len is not None
-        ]
-        original_verified = [
-            result.original_verified
-            for result in rollouts
-            if result.original_verified is not None
-        ]
-        miner_verified = [
-            result.miner_verified
-            for result in rollouts
-            if result.miner_verified is not None
-        ]
+        by_task: dict[str, list[RolloutResult]] = defaultdict(list)
+        for rollout in rollouts:
+            by_task[self._rollout_task(rollout)].append(rollout)
 
         def signed_correctness(values: list[bool]) -> float | None:
             return (
@@ -287,26 +375,71 @@ class EpochLoop:
                 else None
             )
 
+        def mean(values: list[int | float]) -> float | None:
+            return sum(float(value) for value in values) / len(values) if values else None
+
+        task_completion_len: dict[str, float] = {}
+        task_correctness_score: dict[str, float] = {}
+        task_original_score: dict[str, float] = {}
+        task_original_correctness_score: dict[str, float] = {}
+        task_original_completion_len: dict[str, float] = {}
+        for task, task_rollouts in by_task.items():
+            miner_lengths = [
+                result.miner_completion_len
+                for result in task_rollouts
+                if result.miner_completion_len is not None
+            ]
+            if (value := mean(miner_lengths)) is not None:
+                task_completion_len[task] = value
+
+            original_lengths = [
+                result.original_completion_len
+                for result in task_rollouts
+                if result.original_completion_len is not None
+            ]
+            if (value := mean(original_lengths)) is not None:
+                task_original_completion_len[task] = value
+
+            miner_verified = [
+                result.miner_verified
+                for result in task_rollouts
+                if result.miner_verified is not None
+            ]
+            if (value := signed_correctness(miner_verified)) is not None:
+                task_correctness_score[task] = value
+
+            original_verified = [
+                result.original_verified
+                for result in task_rollouts
+                if result.original_verified is not None
+            ]
+            if original_verified:
+                task_original_score[task] = sum(bool(v) for v in original_verified) / len(
+                    original_verified
+                )
+            if (value := signed_correctness(original_verified)) is not None:
+                task_original_correctness_score[task] = value
+
+        weights = self._score_type_weights()
         return MinerEpochResult(
             miner_id=miner_id,
             score=score,
-            completion_len=(
-                sum(miner_lengths) / len(miner_lengths) if miner_lengths else None
+            completion_len=self._weighted_task_mean(task_completion_len, weights),
+            correctness_score=self._weighted_task_mean(task_correctness_score, weights),
+            original_score=self._weighted_task_mean(task_original_score, weights),
+            original_correctness_score=self._weighted_task_mean(
+                task_original_correctness_score, weights
             ),
-            correctness_score=signed_correctness(miner_verified),
-            original_score=(
-                sum(bool(verified) for verified in original_verified)
-                / len(original_verified)
-                if original_verified
-                else None
-            ),
-            original_correctness_score=signed_correctness(original_verified),
-            original_completion_len=(
-                sum(original_lengths) / len(original_lengths)
-                if original_lengths
-                else None
+            original_completion_len=self._weighted_task_mean(
+                task_original_completion_len, weights
             ),
             telemetry_count=len(rollouts),
+            task_scores=dict(task_scores or {}),
+            task_completion_len=task_completion_len,
+            task_correctness_score=task_correctness_score,
+            task_original_score=task_original_score,
+            task_original_correctness_score=task_original_correctness_score,
+            task_original_completion_len=task_original_completion_len,
         )
 
     @staticmethod
@@ -1369,8 +1502,11 @@ class EpochLoop:
             return MinerEpochResult(miner_id, None, error)
 
         results = [*math_rollouts, *long_context_rollouts]
-        score = stratified_score(results, min_coverage_per_band=self._config.min_coverage_per_band)
-        return self._scored_result(miner_id, score, results)
+        score, task_scores = self._score_rollouts_by_task(
+            results,
+            min_coverage_per_band=self._config.min_coverage_per_band,
+        )
+        return self._scored_result(miner_id, score, results, task_scores)
 
     def _score_prepared_multiple_choice(
         self,
@@ -1411,18 +1547,16 @@ class EpochLoop:
                 multiple_choice_rollout_result(instance, result)
                 for instance, result in zip(batch, scored)
             ]
-            score = stratified_score(
+            score, task_scores = self._score_rollouts_by_task(
                 rollouts,
                 min_coverage_per_band=1,
-                required_bands={"multiple_choice"},
             )
-            return self._scored_result(miner_id, score, rollouts)
+            return self._scored_result(miner_id, score, rollouts, task_scores)
         except Exception as exc:
             return MinerEpochResult(miner_id, None, f"multiple_choice_failed: {exc}")
 
-    @staticmethod
     def _combine_scored_results(
-        miner_id: str, results: list[MinerEpochResult]
+        self, miner_id: str, results: list[MinerEpochResult]
     ) -> MinerEpochResult:
         failures = [result for result in results if result.score is None]
         if failures:
@@ -1438,23 +1572,39 @@ class EpochLoop:
         for score in scores:
             per_band.update(score.per_band)
         coverage_ok = all(score.coverage_ok for score in scores)
-        overall = sum(score.overall for score in scores) / len(scores)
         reason = "; ".join(score.reason for score in scores if score.reason) or None
         telemetry_results = [result for result in results if result.telemetry_count > 0]
 
-        def weighted_mean(field: str) -> float | None:
-            available = [
-                result
-                for result in telemetry_results
-                if getattr(result, field) is not None
-            ]
-            count = sum(result.telemetry_count for result in available)
-            if count == 0:
-                return None
-            return sum(
-                float(getattr(result, field)) * result.telemetry_count
-                for result in available
-            ) / count
+        def mean_task_values(field: str) -> dict[str, float]:
+            values: dict[str, list[float]] = defaultdict(list)
+            for result in telemetry_results:
+                for task, value in getattr(result, field).items():
+                    values[task].append(float(value))
+            return {
+                task: sum(task_values) / len(task_values)
+                for task, task_values in values.items()
+                if task_values
+            }
+
+        task_scores = mean_task_values("task_scores")
+        for task, score in sorted(task_scores.items()):
+            per_band[f"type/{task}"] = score
+        weights = self._score_type_weights()
+        weighted_overall = self._weighted_task_mean(task_scores, weights)
+        overall = (
+            weighted_overall
+            if weighted_overall is not None
+            else sum(score.overall for score in scores) / len(scores)
+        )
+        task_completion_len = mean_task_values("task_completion_len")
+        task_correctness_score = mean_task_values("task_correctness_score")
+        task_original_score = mean_task_values("task_original_score")
+        task_original_correctness_score = mean_task_values(
+            "task_original_correctness_score"
+        )
+        task_original_completion_len = mean_task_values(
+            "task_original_completion_len"
+        )
 
         return MinerEpochResult(
             miner_id,
@@ -1465,14 +1615,24 @@ class EpochLoop:
                 reason=reason,
             ),
             None,
-            completion_len=weighted_mean("completion_len"),
-            correctness_score=weighted_mean("correctness_score"),
-            original_score=weighted_mean("original_score"),
-            original_correctness_score=weighted_mean("original_correctness_score"),
-            original_completion_len=weighted_mean("original_completion_len"),
+            completion_len=self._weighted_task_mean(task_completion_len, weights),
+            correctness_score=self._weighted_task_mean(task_correctness_score, weights),
+            original_score=self._weighted_task_mean(task_original_score, weights),
+            original_correctness_score=self._weighted_task_mean(
+                task_original_correctness_score, weights
+            ),
+            original_completion_len=self._weighted_task_mean(
+                task_original_completion_len, weights
+            ),
             telemetry_count=sum(
                 result.telemetry_count for result in telemetry_results
             ),
+            task_scores=task_scores,
+            task_completion_len=task_completion_len,
+            task_correctness_score=task_correctness_score,
+            task_original_score=task_original_score,
+            task_original_correctness_score=task_original_correctness_score,
+            task_original_completion_len=task_original_completion_len,
         )
 
     def _full_eval_key(self, n_math: int, n_long_context_qa: int) -> str:
@@ -1545,6 +1705,14 @@ class EpochLoop:
             original_correctness_score=full_result.original_correctness_score,
             original_completion_len=full_result.original_completion_len,
             telemetry_count=full_result.telemetry_count,
+            task_scores=full_result.task_scores,
+            task_completion_len=full_result.task_completion_len,
+            task_correctness_score=full_result.task_correctness_score,
+            task_original_score=full_result.task_original_score,
+            task_original_correctness_score=(
+                full_result.task_original_correctness_score
+            ),
+            task_original_completion_len=full_result.task_original_completion_len,
         )
 
     def _qualification_only_score(
@@ -1567,6 +1735,12 @@ class EpochLoop:
             prepared, eval_key, history_snapshot
         )
         per_band = {"qualification": qualification.score.overall, "confidence": confidence}
+        per_band.update(
+            {
+                f"type/{task}": score
+                for task, score in sorted(qualification.task_scores.items())
+            }
+        )
         if history is not None:
             per_band["history"] = history
         return MinerEpochResult(
@@ -1584,6 +1758,14 @@ class EpochLoop:
             original_correctness_score=qualification.original_correctness_score,
             original_completion_len=qualification.original_completion_len,
             telemetry_count=qualification.telemetry_count,
+            task_scores=qualification.task_scores,
+            task_completion_len=qualification.task_completion_len,
+            task_correctness_score=qualification.task_correctness_score,
+            task_original_score=qualification.task_original_score,
+            task_original_correctness_score=(
+                qualification.task_original_correctness_score
+            ),
+            task_original_completion_len=qualification.task_original_completion_len,
         )
 
     def _select_full_eval_miners(

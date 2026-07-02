@@ -154,6 +154,30 @@ def _clean_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _extract_last_boxed(text: str) -> str | None:
+    marker = r"\boxed{"
+    start = text.rfind(marker)
+    if start < 0:
+        return None
+    index = start + len(marker)
+    depth = 1
+    chars: list[str] = []
+    while index < len(text):
+        ch = text[index]
+        if ch == "{":
+            depth += 1
+            chars.append(ch)
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return "".join(chars).strip()
+            chars.append(ch)
+        else:
+            chars.append(ch)
+        index += 1
+    return None
+
+
 def _row_problem(row: dict[str, Any]) -> str:
     for key in ("problem", "question", "prompt", "input"):
         text = _clean_text(row.get(key))
@@ -347,8 +371,11 @@ class SynthesizedTrack:
 
     def verify(self, seed: str, output: str) -> bool:
         gold = self._instance(seed).gold_answer
+        boxed = _extract_last_boxed(output)
+        if boxed is None:
+            return False
         try:
-            return check_equivalence(rf"\boxed{{{gold}}}", output)
+            return check_equivalence(rf"\boxed{{{gold}}}", rf"\boxed{{{boxed}}}")
         except ValueError:
             return False
 
