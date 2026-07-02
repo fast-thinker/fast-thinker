@@ -147,6 +147,11 @@ Full evaluation uses a broader reasoning workload. The current defaults are:
 - 20 generated math problems; and
 - 50 retrieval-backed long-context question-answering problems.
 
+Long-context problems are open-answer tasks rather than multiple choice. The
+candidate must end with `\boxed{answer}`. The validator first compares a
+normalized answer with the gold answer; non-exact answers are batch-judged for
+semantic equivalence by the frozen original model with thinking disabled.
+
 The frozen base model answers the evaluation batch first. Each candidate then
 answers the same problems under comparable limits. This makes the score a
 measure of improvement over the common baseline rather than an isolated test
@@ -184,14 +189,16 @@ flowchart TD
 
 Every problem is scored by comparing the candidate with the frozen base model.
 Let `T_candidate` be the candidate's completion-token count and `T_base` be the
-base model's completion-token count.
+base model's completion-token count. For long-context QA, let `S` be `512` when
+the candidate uses retrieval search and `0` otherwise. All candidate-generated
+tokens count, including tokens inside `<think>` and `<search>`.
 
 | Result | Exact reward |
 | --- | --- |
+| Candidate does not return a valid `\boxed{answer}` | `0.0` |
 | Candidate is incorrect | `-1.0` |
 | Candidate is correct and the base model is incorrect | `+1.0` before the peer-efficiency adjustment in Section 6.2 |
-| Candidate and base model are both correct | `1 - (T_candidate / max(1, T_base))` |
-| Long-context model selects `no information` | `0.0` |
+| Candidate and base model are both correct | `1 - (T_candidate / max(1, T_base + S))` |
 
 When both models are correct, a candidate using half as many tokens as the base
 model receives `0.5`. Equal token counts receive `0.0`. A candidate using more
