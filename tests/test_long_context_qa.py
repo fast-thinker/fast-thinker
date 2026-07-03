@@ -86,7 +86,8 @@ class _GenerationInference(_Inference):
                 self.revised_questions += 1
                 completions.append(
                     (
-                        '{"question": "Revised hard question", '
+                        '{"question": "Revised hard question '
+                        f'{self.revised_questions}", '
                         '"answer": "Ada Lovelace", '
                         '"supporting_document_indices": [1]}',
                         8,
@@ -103,19 +104,21 @@ class _FilteringRetriever(_Retriever):
         self.gold_hit = gold_hit
         self.distractor_hit = distractor_hit
         self.random_seeds: list[str] = []
+        self.seed_queries: list[str] = []
 
     def random_document(self, seed: str) -> CorpusDocument:
         self.random_seeds.append(seed)
         return self.gold_hit.document
 
-    def search(self, _query: str, *, topk: int) -> list[RetrievalHit]:
+    def search(self, query: str, *, topk: int) -> list[RetrievalHit]:
+        self.seed_queries.append(query)
         return [self.gold_hit][:topk]
 
     def search_batch(self, queries: list[str], *, topk: int) -> list[list[RetrievalHit]]:
         self.batch_calls.append((queries, topk))
         return [
             [self.gold_hit]
-            if question == "Generated question 1"
+            if question == "Revised hard question 1"
             else [self.distractor_hit]
             for question in queries
         ]
@@ -256,7 +259,7 @@ class LongContextEvidenceSelectionTest(unittest.TestCase):
             {"short": [1.5], "long": [1.0], "wrong": [-1.0]},
         )
 
-    def test_generation_revises_rejected_question_and_fills_fifty_slots(self) -> None:
+    def test_two_stage_generation_fills_fifty_slots_after_rejection(self) -> None:
         inference = _GenerationInference()
         retriever = _FilteringRetriever(
             self.hits[0],
@@ -276,13 +279,14 @@ class LongContextEvidenceSelectionTest(unittest.TestCase):
         instances = evaluator.generate_instances(seeds)
 
         self.assertEqual(len(instances), 50)
-        self.assertEqual(instances[0].question, "Revised hard question")
-        self.assertNotIn("Generated question 1", {item.question for item in instances})
-        self.assertEqual(inference.generated_questions, 50)
-        self.assertEqual(inference.revised_questions, 1)
+        self.assertEqual(instances[0].question, "Revised hard question 51")
+        self.assertNotIn("Revised hard question 1", {item.question for item in instances})
+        self.assertEqual(inference.generated_questions, 51)
+        self.assertEqual(inference.revised_questions, 51)
         self.assertEqual([topk for _queries, topk in retriever.batch_calls], [5, 5])
         self.assertEqual(retriever.random_seeds[0], "base-seed-0")
-        self.assertEqual(len(retriever.random_seeds), 50)
+        self.assertEqual(len(retriever.random_seeds), 51)
+        self.assertEqual(set(retriever.seed_queries), {"Ada Lovelace"})
 
 
 if __name__ == "__main__":

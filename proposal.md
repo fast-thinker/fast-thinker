@@ -158,12 +158,13 @@ documents. The validator compares that answer with the gold answer, using
 normalized exact match first and the same no-thinking original model as a
 semantic-equivalence judge only when exact match fails.
 
-The generator identifies the documents that support each answer. Generated
-questions are accepted only when searching BM25 with the question verbatim
-returns none of those supporting documents in the top five. A colliding question
-gets one rewrite attempt that must preserve its answer and supporting-document
-indices; persistent failures use deterministic replacement seeds until every
-evaluation slot is filled.
+The validator samples a source title and retrieves seed documents with that
+title. The generator identifies which documents support its answer, then a
+second generation pass rewrites every question for retrieval difficulty while
+preserving the answer and supporting-document indices. A rewritten question is
+accepted only when searching BM25 with it verbatim returns none of its supporting
+documents in the top five. Failures use deterministic replacement seeds until
+every evaluation slot is filled.
 
 For baseline measurement, BM25 searches with the original question directly and
 the frozen base model answers from the top five documents without generating a
