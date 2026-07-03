@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from contextlib import nullcontext
 
-from thinker.retrieval.bm25 import CorpusDocument, RetrievalHit
+from thinker.retrieval.bm25 import CorpusDocument, RetrievalHit, format_hits
 from thinker.validator.long_context_qa import (
     MINER_SYSTEM_PROMPT,
     LongContextAnswer,
@@ -224,6 +224,18 @@ class LongContextEvidenceSelectionTest(unittest.TestCase):
         self.assertIsNone(
             parse_document_indices(r"\boxed{1,2}", max_index=2, max_selected=1)
         )
+
+    def test_formatted_hits_use_positional_doc_indices_after_filtering(self) -> None:
+        formatted = format_hits(
+            [
+                _hit(1, "First", "First document."),
+                _hit(7, "Seventh", "Second displayed document."),
+            ]
+        )
+
+        self.assertIn("Doc 1 (Title: First)", formatted)
+        self.assertIn("Doc 2 (Title: Seventh)", formatted)
+        self.assertNotIn("Doc 7", formatted)
 
     def test_baseline_directly_retrieves_top_five_and_answers(self) -> None:
         answer = self.evaluator.score_original_batch([self.instance])[0]

@@ -1676,13 +1676,34 @@ class LongContextQAEvaluator:
             "against those documents. Set supporting_document_indices to exactly two "
             "one-based Doc indices with different titles.\n\n"
             f"Documents:\n{context}\n\n"
-            "Use this JSON format exactly. The content below is only an example; "
-            "create a new question and answer from the documents above.\n\n"
+            "Real HotpotQA-style examples, paraphrased from distractor/train rows. "
+            "They demonstrate the desired shapes only; do not copy their entities, "
+            "answers, or facts unless they appear in the documents above. In your "
+            "response, supporting_document_indices must refer to the Doc labels shown "
+            "above, not to these examples.\n\n"
+            "Comparison example:\n"
+            "```json\n"
+            "{\n"
+            '  "question": "Which publication began earlier, Arthur\'s Magazine or First for Women?",\n'
+            '  "answer": "Arthur\'s Magazine",\n'
+            '  "supporting_document_indices": [1, 2]\n'
+            "}\n"
+            "```\n\n"
+            "Bridge example:\n"
+            "```json\n"
+            "{\n"
+            '  "question": "The hotel company associated with the Oberoi family is headquartered in which city?",\n'
+            '  "answer": "Delhi",\n'
+            '  "supporting_document_indices": [1, 2]\n'
+            "}\n"
+            "```\n\n"
+            "Use this JSON format exactly. Create a new question and answer from the "
+            "documents above.\n\n"
             "```json\n"
             "{\n"
             '  "question": "Which university was attended by the novelist whose book inspired the named film?",\n'
             '  "answer": "Example University",\n'
-            '  "supporting_document_indices": [1, 3]\n'
+            '  "supporting_document_indices": [1, 2]\n'
             "}\n"
             "```\n\n"
             "Return exactly one JSON object and no explanation."

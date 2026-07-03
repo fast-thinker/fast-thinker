@@ -462,11 +462,11 @@ class BM25RetrievalService:
 
 def format_hits(hits: Iterable[RetrievalHit], *, max_chars_per_doc: int | None = None) -> str:
     parts: list[str] = []
-    for hit in hits:
+    for display_index, hit in enumerate(hits, start=1):
         text = hit.document.text or hit.document.contents
         if max_chars_per_doc is not None and len(text) > max_chars_per_doc:
             text = text[:max_chars_per_doc].rstrip()
-        parts.append(f"Doc {hit.rank} (Title: {hit.document.title}) {text}")
+        parts.append(f"Doc {display_index} (Title: {hit.document.title}) {text}")
     return "\n".join(parts)
 
 
