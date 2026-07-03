@@ -169,6 +169,7 @@ class LongContextQAConfig:
     qa_generation_max_new_tokens: int = 256
     qa_generation_max_attempts: int = 3
     qa_filter_max_attempts: int = 50
+    qa_revision_max_attempts: int = 1
     judge_max_new_tokens: int = 64
     original_answer_max_new_tokens: int = 4096
     miner_max_tokens: int = 32768
@@ -186,6 +187,7 @@ class LongContextQAInstance:
     seed_hits: tuple[RetrievalHit, ...]
     question: str
     gold_answer: str
+    supporting_document_indices: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -230,12 +232,30 @@ def _first_json_object(text: str) -> dict[str, object]:
     raise ValueError("model output did not contain a JSON object")
 
 
-def parse_generated_qa(text: str) -> tuple[str, str]:
+def _parse_generated_qa_record(text: str) -> tuple[str, str, tuple[int, ...]]:
     data = _first_json_object(text)
     question = str(data.get("question") or "").strip()
     answer = str(data.get("answer") or "").strip()
     if not question or not answer:
         raise ValueError("generated QA JSON must contain non-empty question and answer")
+    raw_indices = data.get("supporting_document_indices")
+    if (
+        not isinstance(raw_indices, list)
+        or not raw_indices
+        or any(isinstance(value, bool) or not isinstance(value, int) for value in raw_indices)
+    ):
+        raise ValueError(
+            "generated QA JSON must contain non-empty integer supporting_document_indices"
+        )
+    indices = tuple(dict.fromkeys(raw_indices))
+    if any(index <= 0 for index in indices):
+        raise ValueError("supporting_document_indices must be positive and one-based")
+    return question, answer, indices
+
+
+def parse_generated_qa(text: str) -> tuple[str, str]:
+    """Parse the generated question and answer, preserving the public helper API."""
+    question, answer, _supporting_indices = _parse_generated_qa_record(text)
     return question, answer
 
 
@@ -666,7 +686,11 @@ class LongContextQAEvaluator:
                     seed_hits,
                     prompt,
                 ), (completion, _tokens) in zip(prepared, completions):
-                    question, gold_answer = self._parse_generated_qa_with_retries(
+                    (
+                        question,
+                        gold_answer,
+                        supporting_indices,
+                    ) = self._parse_generated_qa_with_retries(
                         seed=seed,
                         source_document=source_document,
                         seed_hits=seed_hits,
@@ -680,6 +704,7 @@ class LongContextQAEvaluator:
                             seed_hits=seed_hits,
                             question=question,
                             gold_answer=gold_answer,
+                            supporting_document_indices=supporting_indices,
                         )
                     )
                     candidate_indexes.append(index)
@@ -693,19 +718,125 @@ class LongContextQAEvaluator:
                         "retriever must return one result list per generated question"
                     )
 
-                next_pending: list[int] = []
+                colliding: list[tuple[int, LongContextQAInstance]] = []
                 for index, candidate, hits in zip(
                     candidate_indexes, candidates, direct_hits
                 ):
-                    gold_ids = {hit.document.doc_id for hit in candidate.seed_hits}
+                    gold_ids = {
+                        candidate.seed_hits[supporting_index - 1].document.doc_id
+                        for supporting_index in candidate.supporting_document_indices
+                    }
                     direct_ids = {hit.document.doc_id for hit in hits}
                     if gold_ids.isdisjoint(direct_ids):
                         accepted[index] = candidate
                         progress.update(1)
                     else:
-                        attempts[index] += 1
-                        next_pending.append(index)
-                pending = next_pending
+                        colliding.append((index, candidate))
+
+                print(
+                    "[thinker-validator] long-context QA filter: "
+                    f"generated={len(candidates)} accepted={len(candidates) - len(colliding)} "
+                    f"needs_revision={len(colliding)}",
+                    flush=True,
+                )
+
+                revision_attempts = max(
+                    0, int(self._config.qa_revision_max_attempts)
+                )
+                for revision_attempt in range(1, revision_attempts + 1):
+                    if not colliding:
+                        break
+                    revision_completions: list[tuple[str, int]] = []
+                    for start in range(0, len(colliding), chunk_size):
+                        chunk = colliding[start : start + chunk_size]
+                        revision_completions.extend(
+                            self._generate_original(
+                                [
+                                    self._build_qa_revision_prompt(candidate)
+                                    for _index, candidate in chunk
+                                ],
+                                max_new_tokens=self._config.qa_generation_max_new_tokens,
+                                greedy=True,
+                                progress_label=None,
+                            )
+                        )
+                    if len(revision_completions) != len(colliding):
+                        raise ValueError(
+                            "original model must return one revision per rejected question"
+                        )
+
+                    revised: list[tuple[int, LongContextQAInstance]] = []
+                    invalid: list[tuple[int, LongContextQAInstance]] = []
+                    for (index, candidate), (completion, _tokens) in zip(
+                        colliding, revision_completions
+                    ):
+                        try:
+                            (
+                                question,
+                                answer,
+                                supporting_indices,
+                            ) = _parse_generated_qa_record(completion)
+                            if answer != candidate.gold_answer:
+                                raise ValueError("revision changed the gold answer")
+                            if set(supporting_indices) != set(
+                                candidate.supporting_document_indices
+                            ):
+                                raise ValueError(
+                                    "revision changed supporting_document_indices"
+                                )
+                            if any(
+                                supporting_index > len(candidate.seed_hits)
+                                for supporting_index in supporting_indices
+                            ):
+                                raise ValueError(
+                                    "revision supporting_document_indices are out of range"
+                                )
+                        except Exception as exc:
+                            self._log_invalid_generated_qa(
+                                revision_attempt,
+                                revision_attempts,
+                                exc,
+                            )
+                            invalid.append((index, candidate))
+                            continue
+                        revised.append((index, replace(candidate, question=question)))
+
+                    revised_hits = self._retriever.search_batch(
+                        [candidate.question for _index, candidate in revised],
+                        topk=filter_topk,
+                    )
+                    if len(revised_hits) != len(revised):
+                        raise ValueError(
+                            "retriever must return one result list per revised question"
+                        )
+                    still_colliding = invalid
+                    accepted_revisions = 0
+                    for (index, candidate), hits in zip(revised, revised_hits):
+                        gold_ids = {
+                            candidate.seed_hits[
+                                supporting_index - 1
+                            ].document.doc_id
+                            for supporting_index in candidate.supporting_document_indices
+                        }
+                        direct_ids = {hit.document.doc_id for hit in hits}
+                        if gold_ids.isdisjoint(direct_ids):
+                            accepted[index] = candidate
+                            accepted_revisions += 1
+                            progress.update(1)
+                        else:
+                            still_colliding.append((index, candidate))
+                    colliding = still_colliding
+                    print(
+                        "[thinker-validator] long-context QA revision: "
+                        f"attempt={revision_attempt}/{revision_attempts} "
+                        f"accepted={accepted_revisions} remaining={len(colliding)}",
+                        flush=True,
+                    )
+
+                pending = []
+                for index, _candidate in colliding:
+                    attempts[index] += 1
+                    pending.append(index)
 
         if any(instance is None for instance in accepted):
             raise RuntimeError("long-context question filtering left an unfilled slot")
@@ -731,13 +862,20 @@ class LongContextQAEvaluator:
         seed_hits: tuple[RetrievalHit, ...],
         prompt: str,
         completion: str,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, tuple[int, ...]]:
         attempts = max(1, self._config.qa_generation_max_attempts)
         current_completion = completion
         last_error: Exception | None = None
         for attempt in range(1, attempts + 1):
             try:
-                return parse_generated_qa(current_completion)
+                question, answer, supporting_indices = _parse_generated_qa_record(
+                    current_completion
+                )
+                if any(index > len(seed_hits) for index in supporting_indices):
+                    raise ValueError(
+                        "supporting_document_indices exceed the provided documents"
+                    )
+                return question, answer, supporting_indices
             except Exception as exc:
                 last_error = exc
                 self._log_invalid_generated_qa(attempt, attempts, exc)
@@ -763,12 +901,20 @@ class LongContextQAEvaluator:
                 current_completion = completions[0][0]
 
         question, answer = self._fallback_generated_qa(source_document)
+        supporting_index = next(
+            (
+                index
+                for index, hit in enumerate(seed_hits, start=1)
+                if hit.document.doc_id == source_document.doc_id
+            ),
+            1,
+        )
         print(
             "[thinker-validator] long-context QA generation: using fallback QA "
             f"after parse failure ({type(last_error).__name__})",
             flush=True,
         )
-        return question, answer
+        return question, answer, (supporting_index,)
 
     @staticmethod
     def _log_invalid_generated_qa(
@@ -1572,14 +1718,17 @@ class LongContextQAEvaluator:
             "model can reformulate the question into one lexical search query that "
             "retrieves the relevant document. Prefer references by role, relation, or "
             "attribute and multi-hop reasoning over direct quotation.\n\n"
-            "The answer must still be concise and fully grounded in the documents.\n\n"
+            "The answer must still be concise and fully grounded in the documents. "
+            "Set supporting_document_indices to the smallest one-based set of Doc "
+            "indices that directly supports the answer.\n\n"
             f"Documents:\n{context}\n\n"
             "Use this JSON format exactly. The content below is only an example; "
             "create a new question and answer from the documents above.\n\n"
             "```json\n"
             "{\n"
             '  "question": "Who described the Analytical Engine algorithm?",\n'
-            '  "answer": "Ada Lovelace"\n'
+            '  "answer": "Ada Lovelace",\n'
+            '  "supporting_document_indices": [1]\n'
             "}\n"
             "```\n\n"
             "Return exactly one JSON object and no explanation."
@@ -1605,8 +1754,37 @@ class LongContextQAEvaluator:
             "Return a replacement response using only this exact form, with no markdown "
             "fence, no prose, and no extra keys:\n"
             '{"question": "A concise question grounded in the documents", '
-            '"answer": "A concise answer"}\n\n'
+            '"answer": "A concise answer", '
+            '"supporting_document_indices": [1]}\n\n'
             f"Documents, repeated for grounding:\n{context}"
+        )
+
+    def _build_qa_revision_prompt(self, instance: LongContextQAInstance) -> str:
+        context = format_hits(
+            instance.seed_hits,
+            max_chars_per_doc=self._config.qa_generation_max_chars_per_doc,
+        )
+        payload = json.dumps(
+            {
+                "question": instance.question,
+                "answer": instance.gold_answer,
+                "supporting_document_indices": list(
+                    instance.supporting_document_indices
+                ),
+            },
+            ensure_ascii=False,
+        )
+        return (
+            "Rewrite this long-context QA question because searching its wording "
+            "verbatim with BM25 retrieves a supporting document in the top five. "
+            "Preserve the exact answer, required reasoning, and supporting document "
+            "indices. Do not mention the answer, document titles, or distinctive "
+            "phrases copied from the documents. Use indirect bridge clues that let a "
+            "capable model formulate a better lexical search query.\n\n"
+            f"Previous QA JSON:\n{payload}\n\n"
+            f"Documents:\n{context}\n\n"
+            "Return JSON only with exactly these fields: question, answer, and "
+            "supporting_document_indices."
         )
 
     @staticmethod

@@ -158,9 +158,11 @@ documents. The validator compares that answer with the gold answer, using
 normalized exact match first and the same no-thinking original model as a
 semantic-equivalence judge only when exact match fails.
 
-Generated questions are accepted only when searching BM25 with the question
-verbatim returns none of the seed evidence documents in the top five. Rejected
-candidates are regenerated with deterministic derived seeds until every
+The generator identifies the documents that support each answer. Generated
+questions are accepted only when searching BM25 with the question verbatim
+returns none of those supporting documents in the top five. A colliding question
+gets one rewrite attempt that must preserve its answer and supporting-document
+indices; persistent failures use deterministic replacement seeds until every
 evaluation slot is filled.
 
 For baseline measurement, BM25 searches with the original question directly and

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 import time
 import traceback
@@ -544,6 +545,62 @@ class EpochLoop:
             details.append("search_used=true")
         suffix = f" ({', '.join(details)})" if details else ""
         print(f"[thinker-validator] sample {label} result{suffix}", flush=True)
+
+    def _log_test_long_context_samples(
+        self,
+        batch: list[LongContextQAInstance],
+        originals: list[LongContextAnswer],
+        results_by_miner: dict[str, list[LongContextMinerResult]],
+        errors_by_miner: dict[str, str],
+        *,
+        limit: int = 5,
+    ) -> None:
+        sample_count = min(max(0, int(limit)), len(batch))
+        self._log(f"test mode long_qa: logging first {sample_count} sample(s)")
+        miner_ids = sorted(set(results_by_miner) | set(errors_by_miner))
+        for index in range(sample_count):
+            instance = batch[index]
+            payload: dict[str, Any] = {
+                "sample": index + 1,
+                "seed": instance.seed,
+                "question": instance.question,
+                "gold_answer": instance.gold_answer,
+                "gold_document_ids": [
+                    instance.seed_hits[index - 1].document.doc_id
+                    for index in instance.supporting_document_indices
+                ],
+                "miners": {},
+            }
+            if index < len(originals):
+                original = originals[index]
+                payload["baseline"] = {
+                    "answer": original.text,
+                    "verified": original.verified,
+                    "tokens": original.completion_len,
+                }
+
+            miner_payloads: dict[str, Any] = {}
+            for miner_id in miner_ids:
+                if miner_id in errors_by_miner:
+                    miner_payloads[miner_id] = {"error": errors_by_miner[miner_id]}
+                    continue
+                miner_results = results_by_miner[miner_id]
+                if index >= len(miner_results):
+                    miner_payloads[miner_id] = {"error": "missing sample result"}
+                    continue
+                result = miner_results[index]
+                miner_payloads[miner_id] = {
+                    "search_query": result.search_query,
+                    "selected_indices": list(result.selected_document_indices),
+                    "tokens": result.miner.completion_len,
+                    "verified": result.miner.verified,
+                    "reward": result.score,
+                }
+            payload["miners"] = miner_payloads
+            self._log(
+                "test mode long_qa sample "
+                + json.dumps(payload, ensure_ascii=False, sort_keys=True)
+            )
 
     def build_batch(
         self,
@@ -2023,6 +2080,12 @@ class EpochLoop:
                 batch,
                 original_long_context,
             )
+        )
+        self._log_test_long_context_samples(
+            batch,
+            original_long_context,
+            long_context_results,
+            long_context_errors,
         )
 
         results: dict[str, MinerEpochResult] = {}

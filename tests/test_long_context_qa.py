@@ -67,6 +67,7 @@ class _GenerationInference(_Inference):
     def __init__(self) -> None:
         super().__init__()
         self.generated_questions = 0
+        self.revised_questions = 0
 
     def generate_original_greedy_limited(self, prompts, **kwargs):
         completions = []
@@ -76,7 +77,18 @@ class _GenerationInference(_Inference):
                 completions.append(
                     (
                         '{"question": "Generated question '
-                        f'{self.generated_questions}", "answer": "Ada Lovelace"}}',
+                        f'{self.generated_questions}", "answer": "Ada Lovelace", '
+                        '"supporting_document_indices": [1]}',
+                        8,
+                    )
+                )
+            elif prompt.startswith("Rewrite this long-context QA question"):
+                self.revised_questions += 1
+                completions.append(
+                    (
+                        '{"question": "Revised hard question", '
+                        '"answer": "Ada Lovelace", '
+                        '"supporting_document_indices": [1]}',
                         8,
                     )
                 )
@@ -244,7 +256,7 @@ class LongContextEvidenceSelectionTest(unittest.TestCase):
             {"short": [1.5], "long": [1.0], "wrong": [-1.0]},
         )
 
-    def test_generation_fills_fifty_slots_after_top_five_rejection(self) -> None:
+    def test_generation_revises_rejected_question_and_fills_fifty_slots(self) -> None:
         inference = _GenerationInference()
         retriever = _FilteringRetriever(
             self.hits[0],
@@ -264,12 +276,13 @@ class LongContextEvidenceSelectionTest(unittest.TestCase):
         instances = evaluator.generate_instances(seeds)
 
         self.assertEqual(len(instances), 50)
-        self.assertEqual(instances[0].question, "Generated question 51")
+        self.assertEqual(instances[0].question, "Revised hard question")
         self.assertNotIn("Generated question 1", {item.question for item in instances})
-        self.assertEqual(inference.generated_questions, 51)
+        self.assertEqual(inference.generated_questions, 50)
+        self.assertEqual(inference.revised_questions, 1)
         self.assertEqual([topk for _queries, topk in retriever.batch_calls], [5, 5])
         self.assertEqual(retriever.random_seeds[0], "base-seed-0")
-        self.assertNotEqual(retriever.random_seeds[-1], "base-seed-0")
+        self.assertEqual(len(retriever.random_seeds), 50)
 
 
 if __name__ == "__main__":

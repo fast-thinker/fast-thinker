@@ -353,7 +353,8 @@ def _add_run_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argum
         default=None,
         help=(
             "Run one task-only full-evaluation pass: math, long_qa, or science "
-            "(multiple-choice). Test mode skips W&B logging and chain weights."
+            "(multiple-choice). Test mode skips W&B logging and chain weights; "
+            "long_qa logs the first five samples and miner outcomes."
         ),
     )
     parser.add_argument(
