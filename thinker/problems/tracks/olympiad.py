@@ -115,7 +115,7 @@ def _build_parallel_chords(rng: random.Random, surface: int) -> ParallelChordsSp
         (125, ((35, 120), (44, 117), (75, 100))),
     )
     radius, pairs = rng.choice(systems)
-    scale = rng.randint(1, 60)
+    scale = rng.randint(1, 1_000_000_000)
     first, second = rng.sample(list(pairs), 2)
     return ParallelChordsSpec(
         radius=radius * scale,
@@ -132,7 +132,7 @@ def _build_cevian(rng: random.Random, surface: int) -> CevianSpec:
         (120, ((22, 122), (50, 130), (90, 150), (160, 200))),
     )
     altitude, pairs = rng.choice(systems)
-    scale = rng.randint(1, 60)
+    scale = rng.randint(1, 1_000_000_000)
     left, right = rng.sample(list(pairs), 2)
     bd, ab = left
     dc, ac = right
@@ -146,7 +146,7 @@ def _build_cevian(rng: random.Random, surface: int) -> CevianSpec:
 
 
 def _build_symmetric_roots(rng: random.Random, surface: int) -> SymmetricRootsSpec:
-    roots = tuple(sorted(rng.sample(range(3, 31), 3)))
+    roots = tuple(sorted(rng.sample(range(3, 301), 3)))
     x, y, z = roots
     return SymmetricRootsSpec(
         sum_roots=x + y + z,
@@ -159,8 +159,8 @@ def _build_symmetric_roots(rng: random.Random, surface: int) -> SymmetricRootsSp
 
 
 def _build_lattice_paths(rng: random.Random, surface: int) -> LatticePathsSpec:
-    width = rng.randint(11, 17)
-    height = rng.randint(11, 17)
+    width = rng.randint(20, 80)
+    height = rng.randint(20, 80)
     px = rng.randint(2, width - 6)
     py = rng.randint(2, height - 6)
     qx = rng.randint(px + 2, width - 2)
@@ -175,37 +175,34 @@ def _build_lattice_paths(rng: random.Random, surface: int) -> LatticePathsSpec:
 
 
 def _build_modular_power(rng: random.Random, surface: int) -> ModularPowerSpec:
+    while True:
+        base = rng.randint(3, 997)
+        if math.gcd(base, 1000) == 1:
+            break
     return ModularPowerSpec(
-        base=rng.choice((3, 7, 11, 13, 17, 19, 23, 27)),
-        exponent_base=rng.randint(3, 11),
-        exponent_power=rng.randint(8, 16),
-        exponent_offset=rng.randint(20, 500),
+        base=base,
+        exponent_base=rng.randint(3, 100),
+        exponent_power=rng.randint(20, 200),
+        exponent_offset=rng.randint(1_000, 1_000_000),
         surface=surface,
     )
 
 
 def _build_recurrence(rng: random.Random, surface: int) -> RecurrenceSpec:
     return RecurrenceSpec(
-        first=rng.randint(2, 200),
-        multiplier=rng.randint(2, 9),
-        increment=rng.randint(3, 80),
-        index=rng.randint(150, 700),
-        modulus=rng.choice((997, 1000, 1009, 2027)),
+        first=rng.randint(100, 10_000),
+        multiplier=rng.randint(2, 99),
+        increment=rng.randint(10, 5_000),
+        index=rng.randint(500, 10_000),
+        modulus=rng.choice((997, 1000, 1009, 2027, 4099, 8191, 10007, 20011)),
         surface=surface,
     )
 
 
 def _build_exactly_one(rng: random.Random, surface: int) -> ExactlyOneDivisorSpec:
-    divisor_sets = (
-        (6, 10, 15),
-        (8, 12, 18),
-        (9, 14, 20),
-        (10, 14, 21),
-        (12, 15, 28),
-    )
     return ExactlyOneDivisorSpec(
-        limit=rng.randint(8_000, 40_000),
-        divisors=rng.choice(divisor_sets),
+        limit=rng.randint(20_000, 120_000),
+        divisors=tuple(sorted(rng.sample(range(6, 80), 3))),
         surface=surface,
     )
 
@@ -491,7 +488,7 @@ def _lattice_paths_dynamic(spec: LatticePathsSpec) -> int:
 
 
 def _quality_gate(spec: OlympiadSpec, answer: int, prompt: str) -> bool:
-    if not (2 <= answer <= 1_000_000_000):
+    if not (2 <= answer <= 1_000_000_000_000_000):
         return False
     if not (100 <= len(prompt) <= 1_500):
         return False

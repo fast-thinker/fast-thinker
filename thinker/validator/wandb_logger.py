@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import math
 from datetime import datetime, timezone
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
-from thinker.validator.epoch_loop import MinerEpochResult
+if TYPE_CHECKING:
+    from thinker.validator.epoch_loop import MinerEpochResult
 
 
 DASHBOARD_SCHEMA_VERSION = 2
@@ -116,6 +117,7 @@ class WandbEpochLogger:
             "evaluation/miners_seen": len(results),
         }
         scored_results = []
+        component_rows: list[dict[str, Any]] = []
         for miner_hotkey, result in results.items():
             score = None if result.score is None else float(result.score.overall)
             if score is not None and math.isfinite(score):
@@ -134,10 +136,24 @@ class WandbEpochLogger:
                     data[f"task/{task}/miner/{miner_hotkey}/correctness_score"] = (
                         correctness
                     )
+                component_rows.append(
+                    {
+                        "miner": str(miner_hotkey),
+                        "score": score,
+                        "math": result.task_scores.get("math"),
+                        "long_qa": result.task_scores.get("long_context_qa"),
+                        "science": result.task_scores.get("multiple_choice"),
+                    }
+                )
                 scored_results.append(result)
 
         data["evaluation/miners_scored"] = len(scored_results)
         data["evaluation/miners_rejected"] = len(results) - len(scored_results)
+        if component_rows:
+            component_rows.sort(key=lambda row: (-float(row["score"]), row["miner"]))
+            data["evaluation/component_scores"] = json.dumps(
+                component_rows, separators=(",", ":"), sort_keys=True
+            )
 
         # Staged evaluation can use different batches for different miners. Match
         # the shared baseline to the epoch's highest-scoring miner so the dashboard

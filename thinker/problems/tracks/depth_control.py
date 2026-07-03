@@ -7,8 +7,8 @@ from dataclasses import dataclass
 
 from thinker.problems.interface import Difficulty, register_track
 
-MIN_OP = 3
-MAX_OP = 25
+MIN_OP = 8
+MAX_OP = 60
 
 _VAR_PATTERN = re.compile(r"V\d{6}")
 _BOXED_RE = re.compile(r"\\boxed\{([^{}]*)\}", re.DOTALL)
@@ -52,7 +52,7 @@ def _var_names(rng: random.Random, n: int) -> list[str]:
 def _random_non_target(rng: random.Random, target: int) -> int:
     value = target
     while value == target:
-        value = rng.randint(-5000, 5000)
+        value = rng.randint(-1_000_000, 1_000_000)
     return value
 
 
@@ -75,7 +75,7 @@ class DepthControlTrack:
         equations: list[str] = []
         trace: list[str] = []
 
-        current = rng.randint(-50, 50)
+        current = rng.randint(-1_000, 1_000)
         values[variables[0]] = current
         equations.append(f"{variables[0]} = {current}")
         trace.append(f"{variables[0]} = {current}")
@@ -85,17 +85,17 @@ class DepthControlTrack:
             name = variables[i]
             kind = rng.choice(("add", "sub", "mul"))
             if kind == "add":
-                delta = rng.choice([x for x in range(-25, 26) if x != 0])
+                delta = rng.choice([x for x in range(-250, 251) if x != 0])
                 current = values[prev] + delta
                 equations.append(f"{name} = {prev} + {delta}")
                 trace.append(f"{name} = {values[prev]} + {delta} = {current}")
             elif kind == "sub":
-                delta = rng.randint(1, 25)
+                delta = rng.randint(1, 250)
                 current = values[prev] - delta
                 equations.append(f"{name} = {prev} - {delta}")
                 trace.append(f"{name} = {values[prev]} - {delta} = {current}")
             else:
-                factor = rng.choice((-3, -2, 2, 3))
+                factor = rng.choice((-9, -7, -5, -3, -2, 2, 3, 5, 7, 9))
                 current = values[prev] * factor
                 equations.append(f"{name} = {prev} * {factor}")
                 trace.append(f"{name} = {values[prev]} * {factor} = {current}")

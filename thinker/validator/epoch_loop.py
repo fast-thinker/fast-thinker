@@ -557,11 +557,18 @@ class EpochLoop:
             coverage_ok = result.score.coverage_ok if result.score is not None else False
             return (result.score is None, not coverage_ok, -score, miner_id)
 
+        def component_score(result: MinerEpochResult, task: str) -> str:
+            value = result.task_scores.get(task)
+            return "-" if value is None else f"{value:.4f}"
+
         rows: list[list[str]] = []
         rank = 0
         for miner_id, result in sorted(results.items(), key=sort_key):
             if result.score is None:
                 score = "-"
+                math_score = "-"
+                long_qa_score = "-"
+                science_score = "-"
                 coverage = "-"
                 reason = result.rejected_reason or "rejected"
                 bands = "-"
@@ -569,6 +576,9 @@ class EpochLoop:
             else:
                 rank += 1
                 score = f"{result.score.overall:.4f}"
+                math_score = component_score(result, TASK_MATH)
+                long_qa_score = component_score(result, TASK_LONG_CONTEXT_QA)
+                science_score = component_score(result, TASK_MULTIPLE_CHOICE)
                 coverage = "ok" if result.score.coverage_ok else "missing"
                 reason = result.score.reason or "ok"
                 bands = ", ".join(
@@ -582,13 +592,27 @@ class EpochLoop:
                     miner_id,
                     stage_for(miner_id, result),
                     score,
+                    math_score,
+                    long_qa_score,
+                    science_score,
                     coverage,
                     cls._table_cell(reason, limit=64),
                     cls._table_cell(bands, limit=96),
                 ]
             )
 
-        headers = ["rank", "miner", "stage", "score", "coverage", "reason", "bands"]
+        headers = [
+            "rank",
+            "miner",
+            "stage",
+            "score",
+            "math",
+            "long_qa",
+            "science",
+            "coverage",
+            "reason",
+            "bands",
+        ]
         widths = [
             max(len(headers[idx]), *(len(row[idx]) for row in rows))
             for idx in range(len(headers))
@@ -721,6 +745,15 @@ class EpochLoop:
     @staticmethod
     def _math_gold_answer(instance: ProblemInstance) -> str | None:
         track = get_track(instance.track)
+        dataset_and_item = getattr(track, "_dataset_and_item", None)
+        if callable(dataset_and_item):
+            try:
+                _name, _dataset, item = dataset_and_item(instance.seed)
+                if isinstance(item, dict) and "answer" in item:
+                    return str(item["answer"])
+            except Exception:
+                pass
+
         make_instance = getattr(track, "_instance", None)
         if not callable(make_instance):
             return None
@@ -823,6 +856,85 @@ class EpochLoop:
                 payload["reward"] = scores[index]
             self._log(
                 "test mode math sample "
+                + json.dumps(payload, ensure_ascii=False, sort_keys=True)
+            )
+
+    def _log_test_science_samples(
+        self,
+        batch: list[MultipleChoiceInstance],
+        originals: list[MultipleChoiceAnswer],
+        results_by_miner: dict[str, list[MultipleChoiceMinerResult]],
+        errors_by_miner: dict[str, str],
+        miner_ids: list[str],
+    ) -> None:
+        if not batch:
+            self._log("test mode science sample: no science problem available")
+            return
+        self._log(
+            "test mode science: logging first verified-correct sample for each miner"
+        )
+
+        for miner_id in miner_ids:
+            if miner_id in errors_by_miner:
+                self._log(
+                    "test mode science sample "
+                    + json.dumps(
+                        {"miner": miner_id, "error": errors_by_miner[miner_id]},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+                continue
+
+            miner_results = results_by_miner.get(miner_id, [])
+            selected_index = next(
+                (
+                    index
+                    for index, result in enumerate(miner_results)
+                    if index < len(batch) and result.miner.verified
+                ),
+                None,
+            )
+            if selected_index is None:
+                self._log(
+                    "test mode science sample "
+                    + json.dumps(
+                        {
+                            "miner": miner_id,
+                            "error": "no verified science sample",
+                            "samples_checked": min(len(batch), len(miner_results)),
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+                continue
+
+            instance = batch[selected_index]
+            result = miner_results[selected_index]
+            original = originals[selected_index] if selected_index < len(originals) else None
+            payload: dict[str, Any] = {
+                "sample": selected_index + 1,
+                "seed": instance.seed,
+                "track": TASK_MULTIPLE_CHOICE,
+                "problem_id": instance.problem_id,
+                "problem": instance.prompt,
+                "gold_answer": instance.ground_truth,
+                "enable_thinking": instance.enable_thinking,
+                "miner": miner_id,
+                "miner_response": result.miner.response,
+                "parsed_answer": result.miner.text,
+                "tokens": result.miner.completion_len,
+                "verified": True,
+                "reward": result.score,
+            }
+            if original is not None:
+                payload["baseline"] = {
+                    "verified": original.verified,
+                    "tokens": original.completion_len,
+                }
+            self._log(
+                "test mode science sample "
                 + json.dumps(payload, ensure_ascii=False, sort_keys=True)
             )
 
@@ -2416,6 +2528,13 @@ class EpochLoop:
         )
         sample_weights = self._multiple_choice_sample_weights(
             batch, multiple_choice_results
+        )
+        self._log_test_science_samples(
+            batch,
+            originals,
+            multiple_choice_results,
+            multiple_choice_errors,
+            list(prepared),
         )
 
         results: dict[str, MinerEpochResult] = {}

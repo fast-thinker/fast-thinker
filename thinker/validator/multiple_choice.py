@@ -5,6 +5,7 @@ import hashlib
 import json
 import random
 import re
+import string
 from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
@@ -19,10 +20,13 @@ DEFAULT_SPLIT = "train"
 MULTIPLE_CHOICE_BAND = "multiple_choice"
 CHOICE_RE = re.compile(r"\b([A-Z])\s*[:.)]")
 CHOICE_ANSWER_RE = re.compile(r"^[A-Z](?:\s*[,/]\s*[A-Z])*$")
+OPTION_MARKER_RE = re.compile(
+    r"(?<!\S)(?P<label>[A-Z])(?P<delimiter>[.:)])(?P<space>[ \t]+)"
+)
 MULTIPLE_CHOICE_SYSTEM_PROMPT = (
     "Solve the multiple-choice problem carefully. After reasoning, end your response "
-    "with exactly one option letter in LaTeX boxed form, for example \\boxed{B}. "
-    "Do not put words or multiple letters inside the box."
+    "with exactly one of the displayed option letters in LaTeX boxed form. Do not "
+    "put words or multiple letters inside the box."
 )
 
 
@@ -40,6 +44,7 @@ class MultipleChoiceAnswer:
     text: str
     completion_len: int
     verified: bool
+    response: str = ""
 
 
 @dataclass(frozen=True)
@@ -132,13 +137,100 @@ def _row_input(row: dict[str, Any]) -> str:
     raise ValueError("qualification row has no input/prompt/question field")
 
 
+def _answer_labels(answer: str) -> list[str]:
+    normalized = _normalize_answer(answer)
+    if CHOICE_ANSWER_RE.fullmatch(normalized) is None:
+        return []
+    return re.findall(r"[A-Z]", normalized)
+
+
+def _option_block(
+    prompt: str, ground_truth: str
+) -> tuple[str, list[tuple[str, str]]] | None:
+    matches = list(OPTION_MARKER_RE.finditer(prompt))
+    answer_labels = set(_answer_labels(ground_truth))
+    if len(matches) < 2 or not answer_labels:
+        return None
+
+    # Science rows use one final A/B/C/... option block. Requiring consecutive
+    # source labels avoids treating incidental lettered lines as answer options.
+    runs: list[list[re.Match[str]]] = []
+    current: list[re.Match[str]] = []
+    for match in matches:
+        label = match.group("label")
+        expected = chr(ord("A") + len(current)) if current else "A"
+        if label != expected:
+            if len(current) >= 2:
+                runs.append(current)
+            current = [match] if label == "A" else []
+        else:
+            current.append(match)
+    if len(current) >= 2:
+        runs.append(current)
+
+    candidates = [
+        run for run in runs if answer_labels.issubset({item.group("label") for item in run})
+    ]
+    if not candidates:
+        return None
+    run = candidates[-1]
+    options: list[tuple[str, str]] = []
+    for index, match in enumerate(run):
+        end = run[index + 1].start() if index + 1 < len(run) else len(prompt)
+        text = prompt[match.end() : end].strip()
+        if not text:
+            return None
+        options.append((match.group("label"), text))
+    return prompt[: run[0].start()].rstrip(), options
+
+
+def _shuffle_options(prompt: str, ground_truth: str, seed: str) -> tuple[str, str]:
+    parsed = _option_block(prompt, ground_truth)
+    if parsed is None:
+        raise ValueError("multiple-choice row has no supported A/B/C/... option block")
+    stem, options = parsed
+    if len(options) > len(string.ascii_uppercase):
+        raise ValueError("multiple-choice row has too many options")
+
+    rng = random.Random(_int_seed(seed, "multiple_choice_option_layout"))
+    shuffled = list(options)
+    rng.shuffle(shuffled)
+    original_labels = [label for label, _text in options]
+    unused_labels = [
+        label for label in string.ascii_uppercase if label not in original_labels
+    ]
+    label_pool = (
+        unused_labels
+        if len(unused_labels) >= len(shuffled)
+        else list(string.ascii_uppercase)
+    )
+    labels = rng.sample(label_pool, len(shuffled))
+
+    remapped = {
+        original_label: display_label
+        for display_label, (original_label, _text) in zip(labels, shuffled)
+    }
+    answer_labels = _answer_labels(ground_truth)
+    separator = "," if "," in _normalize_answer(ground_truth) else "/"
+    shuffled_ground_truth = separator.join(remapped[label] for label in answer_labels)
+    rendered_options = "\n".join(
+        f"{display_label}) {text}"
+        for display_label, (_original_label, text) in zip(labels, shuffled)
+    )
+    return f"{stem}\n\n{rendered_options}", shuffled_ground_truth
+
+
 def _is_multiple_choice_row(row: dict[str, Any]) -> bool:
     try:
         answer = _normalize_answer(_ground_truth(row))
         prompt = _row_input(row)
     except Exception:
         return False
-    return bool(CHOICE_ANSWER_RE.fullmatch(answer) and CHOICE_RE.search(prompt))
+    return bool(
+        CHOICE_ANSWER_RE.fullmatch(answer)
+        and CHOICE_RE.search(prompt)
+        and _option_block(prompt, answer) is not None
+    )
 
 
 class MultipleChoiceEvaluator:
@@ -178,10 +270,6 @@ class MultipleChoiceEvaluator:
                     "multiple-choice qualification requires a map-style dataset with select()"
                 )
         return self._dataset
-
-    @staticmethod
-    def _prompt(row: dict[str, Any]) -> str:
-        return _row_input(row)
 
     def _select_provided_rows(
         self, seeds: list[str], *, common_prefix_count: int = 0
@@ -327,18 +415,22 @@ class MultipleChoiceEvaluator:
                 seeds, common_prefix_count=common_prefix_count
             )
         )
-        instances = [
-            MultipleChoiceInstance(
-                seed=seed,
-                prompt=self._prompt(row),
-                ground_truth=_ground_truth(row),
-                problem_id=problem_id,
-                enable_thinking=index < thinking_count,
+        instances: list[MultipleChoiceInstance] = []
+        for index, (seed, (_row_index, row, problem_id)) in enumerate(
+            zip(seeds, selected)
+        ):
+            prompt, ground_truth = _shuffle_options(
+                _row_input(row), _ground_truth(row), seed
             )
-            for index, (seed, (_row_index, row, problem_id)) in enumerate(
-                zip(seeds, selected)
+            instances.append(
+                MultipleChoiceInstance(
+                    seed=seed,
+                    prompt=prompt,
+                    ground_truth=ground_truth,
+                    problem_id=problem_id,
+                    enable_thinking=index < thinking_count,
+                )
             )
-        ]
         return instances
 
     def _generate_original(
@@ -380,6 +472,7 @@ class MultipleChoiceEvaluator:
             text=text,
             completion_len=token_count,
             verified=_normalize_answer(text) == _normalize_answer(ground_truth),
+            response=completion,
         )
 
     def score_original_batch(

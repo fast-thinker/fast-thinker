@@ -123,6 +123,21 @@ task weights are math `0.50`, long-context QA `0.30`, and multiple-choice
 `THINKER_SCORE_WEIGHT_LONG_CONTEXT_QA`, or
 `THINKER_SCORE_WEIGHT_MULTIPLE_CHOICE` to override them.
 
+For science multiple-choice evaluation, the validator deterministically
+shuffles each row's option texts and replaces the original option labels with a
+seeded set of single-letter labels. It remaps the gold answer after this
+transformation, reducing direct memorization of public dataset answer letters.
+
+The built-in exact math tracks and default procedural generators use expanded
+parameter ranges so generated instances have large prompt spaces rather than
+small enumerable tables. The procedural math track defaults to harder Reasoning
+Gym generators and skips trivial arithmetic/factorization-style generators. Set
+`THINKER_PROCEDURAL_GENERATORS` to a comma-separated generator list to override
+that mix. When small default Reasoning Gym generators such as GCD, LCM, prime
+factorization, base conversion, calendar arithmetic, or coordinate geometry are
+enabled, the validator passes wider ranges than Reasoning Gym's package
+defaults.
+
 ## Validator Chat
 
 Test a miner adapter from the validator side:

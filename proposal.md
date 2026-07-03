@@ -136,6 +136,11 @@ Qualification is a lower-cost evaluation applied to accepted models. By
 default, it uses 25 multiple-choice reasoning problems. Five allow the model to
 reason before answering, while twenty require a direct answer.
 
+Before inference, option texts are shuffled and assigned deterministic
+seed-derived letter labels, with the gold answer remapped to the new label.
+This prevents a model from succeeding by memorizing the public dataset's
+original answer position alone.
+
 Qualification ranks the available candidates. The top candidates advance to full
 evaluation, and recent champions may remain eligible so that one unusually
 difficult qualification batch does not immediately remove a strong model.
@@ -146,6 +151,16 @@ Full evaluation uses a broader reasoning workload. The current defaults are:
 
 - 20 generated math problems; and
 - 50 retrieval-backed long-context question-answering problems.
+
+Generated math includes exact-verification tracks and a procedural Reasoning Gym
+track. The built-in exact generators and default procedural generators use
+expanded variable ranges so each family has a large prompt space instead of a
+small enumerable table. The procedural track uses a harder default generator
+subset, avoiding trivial arithmetic, factorization, base-conversion, and similar
+direct-answer generators unless an evaluator explicitly overrides the generator
+list. If those small default Reasoning Gym categories are enabled, the validator
+supplies wider value ranges than the package defaults so they do not collapse
+into tiny lookup tables.
 
 Long-context problems are open-answer tasks for the validator, but candidates
 do not answer them directly. A candidate must search once, receives indexed

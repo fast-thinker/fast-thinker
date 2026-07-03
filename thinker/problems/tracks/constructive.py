@@ -40,6 +40,30 @@ def _coprime_pair(rng: random.Random, lo: int, hi: int) -> tuple[int, int]:
             return a, b
 
 
+def _is_prime(value: int) -> bool:
+    if value < 2:
+        return False
+    if value % 2 == 0:
+        return value == 2
+    factor = 3
+    while factor * factor <= value:
+        if value % factor == 0:
+            return False
+        factor += 2
+    return True
+
+
+def _random_prime(rng: random.Random, lo: int, hi: int) -> int:
+    while True:
+        candidate = rng.randint(lo, hi)
+        if candidate % 2 == 0:
+            candidate += 1
+        if candidate > hi:
+            candidate = lo | 1
+        if _is_prime(candidate):
+            return candidate
+
+
 def _count_inversions(values: list[int]) -> int:
     return sum(1 for i, left in enumerate(values) for right in values[i + 1:] if left > right)
 
@@ -68,7 +92,7 @@ class ConstructiveInstance:
 
 
 def _mod_inverse(rng: random.Random) -> ConstructiveInstance:
-    modulus = rng.randint(41, 499)
+    modulus = rng.randint(10_000, 999_999)
     while True:
         a = rng.randint(2, modulus - 2)
         if math.gcd(a, modulus) == 1:
@@ -90,9 +114,9 @@ def _mod_inverse(rng: random.Random) -> ConstructiveInstance:
 
 
 def _linear_diophantine(rng: random.Random) -> ConstructiveInstance:
-    a, b = _coprime_pair(rng, 12, 90)
-    x0 = rng.randint(-25, 25)
-    y0 = rng.randint(-25, 25)
+    a, b = _coprime_pair(rng, 100, 9_999)
+    x0 = rng.randint(-2_000, 2_000)
+    y0 = rng.randint(-2_000, 2_000)
     c = a * x0 + b * y0
     prompt = (
         f"Find integers x and y satisfying {a}x + {b}y = {c}. "
@@ -108,7 +132,7 @@ def _linear_diophantine(rng: random.Random) -> ConstructiveInstance:
 
 
 def _crt(rng: random.Random) -> ConstructiveInstance:
-    m1, m2 = _coprime_pair(rng, 5, 31)
+    m1, m2 = _coprime_pair(rng, 101, 4_999)
     modulus = m1 * m2
     answer = rng.randint(0, modulus - 1)
     r1 = answer % m1
@@ -130,9 +154,9 @@ def _crt(rng: random.Random) -> ConstructiveInstance:
 
 
 def _permutation(rng: random.Random) -> ConstructiveInstance:
-    n = rng.randint(5, 9)
+    n = rng.randint(8, 18)
     max_inv = n * (n - 1) // 2
-    k = rng.randint(max(1, n - 3), max_inv - 1)
+    k = rng.randint(max(1, n), max_inv - 1)
     answer = tuple(_permutation_with_inversions(n, k))
     prompt = (
         f"Construct a permutation of 1, 2, ..., {n} with exactly {k} inversions. "
@@ -154,7 +178,7 @@ def _permutation(rng: random.Random) -> ConstructiveInstance:
 
 
 def _egyptian_fraction(rng: random.Random) -> ConstructiveInstance:
-    n = rng.randint(5, 80)
+    n = rng.randint(100, 1_000_000)
     a = n + 1
     b = n * (n + 1)
     prompt = (
@@ -178,8 +202,8 @@ def _egyptian_fraction(rng: random.Random) -> ConstructiveInstance:
 
 
 def _gcd_lcm(rng: random.Random) -> ConstructiveInstance:
-    g = rng.randint(2, 40)
-    u, v = _coprime_pair(rng, 2, 35)
+    g = rng.randint(10, 9_999)
+    u, v = _coprime_pair(rng, 10, 9_999)
     x = g * u
     y = g * v
     lcm = g * u * v
@@ -203,7 +227,7 @@ def _gcd_lcm(rng: random.Random) -> ConstructiveInstance:
 
 
 def _pythagorean(rng: random.Random) -> ConstructiveInstance:
-    m, n = _coprime_pair(rng, 3, 24)
+    m, n = _coprime_pair(rng, 20, 2_000)
     if n > m:
         m, n = n, m
     if (m - n) % 2 == 0:
@@ -231,7 +255,7 @@ def _pythagorean(rng: random.Random) -> ConstructiveInstance:
 
 
 def _quadratic_residue(rng: random.Random) -> ConstructiveInstance:
-    prime = rng.choice((101, 103, 107, 109, 113, 127, 131, 137, 139, 149))
+    prime = _random_prime(rng, 10_001, 200_000)
     answer = rng.randint(2, prime - 2)
     residue = (answer * answer) % prime
     prompt = (
@@ -251,7 +275,6 @@ _FAMILIES: tuple[Callable[[random.Random], ConstructiveInstance], ...] = (
     _mod_inverse,
     _linear_diophantine,
     _crt,
-    _permutation,
     _egyptian_fraction,
     _gcd_lcm,
     _pythagorean,
