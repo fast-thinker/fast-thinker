@@ -67,8 +67,6 @@ TOOL_PARAMETER_RE = re.compile(
     r"<parameter=(?P<name>[^>\s]+)>\s*(?P<value>.*?)\s*</parameter>",
     re.DOTALL | re.IGNORECASE,
 )
-SEARCH_RE = re.compile(r"<search>(.*?)</search>", re.DOTALL | re.IGNORECASE)
-LOOSE_SEARCH_RE = re.compile(r"<search>(.*?)<search>", re.DOTALL | re.IGNORECASE)
 BOXED_START_RE = re.compile(r"\\boxed\s*\{")
 LOG_SNIPPET_CHARS = 500
 MAX_REVISED_QUESTION_WORDS = 24
@@ -310,22 +308,38 @@ def parse_judgement(text: str) -> bool:
 
 
 def parse_search_query(text: str) -> str | None:
-    tool_match = TOOL_CALL_RE.search(text)
-    if tool_match and tool_match.group("name").strip().casefold() == "search":
-        parameters = {
-            match.group("name").strip().casefold(): match.group("value").strip()
-            for match in TOOL_PARAMETER_RE.finditer(tool_match.group("body"))
-        }
-        query = parameters.get("query", "")
-        return query or None
-
-    # Keep accepting the old textual form for adapters trained on the previous
-    # protocol, though the active prompt and chat template use native tools.
-    legacy_match = SEARCH_RE.search(text) or LOOSE_SEARCH_RE.search(text)
-    if not legacy_match:
+    tool_matches = list(TOOL_CALL_RE.finditer(text))
+    if len(tool_matches) != 1:
         return None
-    query = legacy_match.group(1).strip()
+    tool_match = tool_matches[0]
+    if text[: tool_match.start()].strip():
+        return None
+    if tool_match.group("name").strip().casefold() != "search":
+        return None
+    parameter_matches = list(TOOL_PARAMETER_RE.finditer(tool_match.group("body")))
+    if len(parameter_matches) != 1:
+        return None
+    parameter = parameter_matches[0]
+    if parameter.group("name").strip().casefold() != "query":
+        return None
+    query = sanitize_search_query(parameter.group("value"))
     return query or None
+
+
+def sanitize_search_query(query: str) -> str:
+    normalized = unicodedata.normalize("NFKC", query)
+    safe_chars: list[str] = []
+    for char in normalized:
+        if char in "\t\n\r":
+            safe_chars.append(" ")
+            continue
+        if unicodedata.category(char)[0] == "C":
+            continue
+        if char in "<>{}":
+            safe_chars.append(" ")
+            continue
+        safe_chars.append(char)
+    return " ".join("".join(safe_chars).split())
 
 
 def extract_final_answer(text: str) -> str:
@@ -1475,16 +1489,12 @@ class LongContextQAEvaluator:
         information = format_hits(
             hits, max_chars_per_doc=self._config.max_chars_per_doc
         )
-        tool_match = TOOL_CALL_RE.search(first_response)
-        assistant_content = (
-            first_response[: tool_match.start()].strip() if tool_match else ""
-        )
         return [
             {"role": "system", "content": MINER_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
             {
                 "role": "assistant",
-                "content": assistant_content,
+                "content": "",
                 "tool_calls": [
                     {
                         "type": "function",
