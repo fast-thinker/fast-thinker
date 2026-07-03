@@ -602,6 +602,40 @@ class EpochLoop:
                 + json.dumps(payload, ensure_ascii=False, sort_keys=True)
             )
 
+    def _log_test_long_context_generated_samples(
+        self,
+        batch: list[LongContextQAInstance],
+        *,
+        limit: int = 5,
+    ) -> None:
+        sample_count = min(max(0, int(limit)), len(batch))
+        self._log(
+            f"test mode long_qa: generated batch; logging first {sample_count} sample(s)"
+        )
+        for sample_index, instance in enumerate(batch[:sample_count], start=1):
+            supporting_documents = [
+                instance.seed_hits[index - 1].document
+                for index in instance.supporting_document_indices
+            ]
+            payload = {
+                "sample": sample_index,
+                "seed": instance.seed,
+                "question": instance.question,
+                "gold_answer": instance.gold_answer,
+                "supporting_documents": [
+                    {
+                        "id": document.doc_id,
+                        "title": document.title,
+                        "text_preview": (document.text or document.contents)[:500],
+                    }
+                    for document in supporting_documents
+                ],
+            }
+            self._log(
+                "test mode long_qa generated sample "
+                + json.dumps(payload, ensure_ascii=False, sort_keys=True)
+            )
+
     def build_batch(
         self,
         n_problems: int | None = None,
@@ -2073,6 +2107,7 @@ class EpochLoop:
             common_seed=common_seed,
             seed_namespace="test_mode",
         )
+        self._log_test_long_context_generated_samples(batch)
         original_long_context = self.score_original_long_context_batch(batch)
         long_context_results, long_context_errors = (
             self._score_miners_long_context_batch(

@@ -258,6 +258,24 @@ def parse_generated_qa(text: str) -> tuple[str, str]:
     return question, answer
 
 
+def _parse_revised_question(text: str) -> str:
+    try:
+        data = _first_json_object(text)
+        question = str(data.get("question") or "").strip()
+    except ValueError:
+        question = text.strip()
+        if question.startswith("```") and question.endswith("```"):
+            lines = question.splitlines()
+            question = "\n".join(lines[1:-1]).strip()
+        if question.lower().startswith("question:"):
+            question = question.split(":", 1)[1].strip()
+    if not question:
+        raise ValueError("question revision must contain a non-empty question")
+    if "\n" in question or len(question) > 2_000:
+        raise ValueError("question revision must contain one bounded question only")
+    return question
+
+
 def parse_judgement(text: str) -> bool:
     try:
         data = _first_json_object(text)
@@ -626,16 +644,14 @@ class LongContextQAEvaluator:
         attempts = [0] * len(seeds)
         pending = list(range(len(seeds)))
         max_attempts = max(1, int(self._config.qa_filter_max_attempts))
-        filter_topk = max(1, int(self._config.baseline_context_topk))
 
         with self._progress(len(seeds), "long-context QA generation") as progress:
             while pending:
                 exhausted = [index for index in pending if attempts[index] >= max_attempts]
                 if exhausted:
                     raise RuntimeError(
-                        "could not generate enough long-context questions with no "
-                        f"gold-document overlap in direct top-{filter_topk} retrieval "
-                        f"after {max_attempts} attempts per question"
+                        "could not generate enough valid two-stage long-context "
+                        f"questions after {max_attempts} attempts per question"
                     )
 
                 prepared: list[
@@ -740,53 +756,22 @@ class LongContextQAEvaluator:
                     candidate_pairs, revision_completions
                 ):
                     try:
-                        (
-                            question,
-                            answer,
-                            supporting_indices,
-                        ) = _parse_generated_qa_record(completion)
-                        if answer != candidate.gold_answer:
-                            raise ValueError("revision changed the gold answer")
-                        if set(supporting_indices) != set(
-                            candidate.supporting_document_indices
-                        ):
-                            raise ValueError(
-                                "revision changed supporting_document_indices"
-                            )
+                        question = _parse_revised_question(completion)
                     except Exception as exc:
                         self._log_invalid_generated_qa(1, 1, exc)
                         failed_indexes.append(index)
                         continue
                     revised.append((index, replace(candidate, question=question)))
 
-                revised_hits = self._retriever.search_batch(
-                    [candidate.question for _index, candidate in revised],
-                    topk=filter_topk,
-                )
-                if len(revised_hits) != len(revised):
-                    raise ValueError(
-                        "retriever must return one result list per revised question"
-                    )
-
-                accepted_count = 0
                 retry_indexes = [*preparation_retry_indexes, *failed_indexes]
-                for (index, candidate), hits in zip(revised, revised_hits):
-                    gold_ids = {
-                        candidate.seed_hits[supporting_index - 1].document.doc_id
-                        for supporting_index in candidate.supporting_document_indices
-                    }
-                    direct_ids = {hit.document.doc_id for hit in hits}
-                    if gold_ids.isdisjoint(direct_ids):
-                        accepted[index] = candidate
-                        accepted_count += 1
-                        progress.update(1)
-                    else:
-                        retry_indexes.append(index)
+                for index, candidate in revised:
+                    accepted[index] = candidate
+                    progress.update(1)
 
                 print(
-                    "[thinker-validator] long-context QA two-stage filter: "
+                    "[thinker-validator] long-context QA two-stage generation: "
                     f"generated={len(candidates)} revised={len(revised)} "
-                    f"accepted={accepted_count} retry={len(retry_indexes)}",
+                    f"accepted={len(revised)} retry={len(retry_indexes)}",
                     flush=True,
                 )
                 pending = []
@@ -879,9 +864,9 @@ class LongContextQAEvaluator:
         error: Exception,
     ) -> None:
         print(
-            "[thinker-validator] long-context QA generation: invalid JSON "
+            "[thinker-validator] long-context QA generation: invalid structured output "
             f"at attempt {attempt}/{attempts} ({type(error).__name__}); "
-            "generated content redacted",
+            f"reason={str(error)[:200]!r}; generated content redacted",
             flush=True,
         )
 
@@ -1717,34 +1702,30 @@ class LongContextQAEvaluator:
             f"Documents, repeated for grounding:\n{context}"
         )
 
-    def _build_qa_revision_prompt(self, instance: LongContextQAInstance) -> str:
+    def _build_qa_revision_prompt(
+        self,
+        instance: LongContextQAInstance,
+    ) -> str:
         context = format_hits(
             instance.seed_hits,
             max_chars_per_doc=self._config.qa_generation_max_chars_per_doc,
         )
-        payload = json.dumps(
-            {
-                "question": instance.question,
-                "answer": instance.gold_answer,
-                "supporting_document_indices": list(
-                    instance.supporting_document_indices
-                ),
-            },
-            ensure_ascii=False,
-        )
+        support_titles = [
+            instance.seed_hits[index - 1].document.title
+            for index in instance.supporting_document_indices
+        ]
         return (
-            "Rewrite this long-context QA question because searching its wording "
-            "verbatim with BM25 retrieves a supporting document in the top five. "
-            "Preserve the exact answer, required reasoning, and supporting document "
-            "indices. Do not mention the answer, document titles, or distinctive "
-            "phrases copied from the documents. Use indirect bridge clues that let a "
-            "capable model formulate a better lexical search query. Before returning, "
-            "verify that the rewritten question still has exactly the preserved answer "
-            "when read with the supporting documents.\n\n"
-            f"Previous QA JSON:\n{payload}\n\n"
+            "Rewrite only the question below to make verbatim BM25 retrieval difficult "
+            "while keeping exactly the same unambiguous answer. Do not state the answer, "
+            "supporting titles, or distinctive "
+            "phrases copied from the documents. Replace direct names and lexical clues "
+            "with indirect roles, dates, relationships, and multi-hop bridge clues. A "
+            "capable model must still be able to infer a better lexical search query.\n\n"
+            f"Original question:\n{instance.question}\n\n"
+            f"Preserved answer (do not output it):\n{instance.gold_answer}\n\n"
+            f"Supporting titles (do not output them):\n{json.dumps(support_titles, ensure_ascii=False)}\n\n"
             f"Documents:\n{context}\n\n"
-            "Return JSON only with exactly these fields: question, answer, and "
-            "supporting_document_indices."
+            'Return JSON only in this exact shape: {"question": "rewritten question"}'
         )
 
     @staticmethod

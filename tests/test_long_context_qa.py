@@ -82,7 +82,7 @@ class _GenerationInference(_Inference):
                         8,
                     )
                 )
-            elif prompt.startswith("Rewrite this long-context QA question"):
+            elif prompt.startswith("Rewrite only the question below"):
                 self.revised_questions += 1
                 completions.append(
                     (
@@ -259,7 +259,7 @@ class LongContextEvidenceSelectionTest(unittest.TestCase):
             {"short": [1.5], "long": [1.0], "wrong": [-1.0]},
         )
 
-    def test_two_stage_generation_fills_fifty_slots_after_rejection(self) -> None:
+    def test_two_stage_generation_fills_fifty_slots_without_bm25_filtering(self) -> None:
         inference = _GenerationInference()
         retriever = _FilteringRetriever(
             self.hits[0],
@@ -279,13 +279,12 @@ class LongContextEvidenceSelectionTest(unittest.TestCase):
         instances = evaluator.generate_instances(seeds)
 
         self.assertEqual(len(instances), 50)
-        self.assertEqual(instances[0].question, "Revised hard question 51")
-        self.assertNotIn("Revised hard question 1", {item.question for item in instances})
-        self.assertEqual(inference.generated_questions, 51)
-        self.assertEqual(inference.revised_questions, 51)
-        self.assertEqual([topk for _queries, topk in retriever.batch_calls], [5, 5])
+        self.assertEqual(instances[0].question, "Revised hard question 1")
+        self.assertEqual(inference.generated_questions, 50)
+        self.assertEqual(inference.revised_questions, 50)
+        self.assertEqual(retriever.batch_calls, [])
         self.assertEqual(retriever.random_seeds[0], "base-seed-0")
-        self.assertEqual(len(retriever.random_seeds), 51)
+        self.assertEqual(len(retriever.random_seeds), 50)
         self.assertEqual(set(retriever.seed_queries), {"Ada Lovelace"})
 
 
