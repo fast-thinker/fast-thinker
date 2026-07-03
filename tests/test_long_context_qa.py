@@ -151,17 +151,20 @@ class LongContextEvidenceSelectionTest(unittest.TestCase):
         self.assertIn("comma-separated Doc indices", MINER_SYSTEM_PROMPT)
         self.assertIn(r"\boxed{2,5}", MINER_SYSTEM_PROMPT)
         self.assertIn("Do not answer the question yourself", MINER_SYSTEM_PROMPT)
+        self.assertIn("Think briefly", MINER_SYSTEM_PROMPT)
 
-    def test_search_query_requires_single_native_tool_call(self) -> None:
+    def test_search_query_allows_reasoning_before_single_native_tool_call(self) -> None:
         valid_call = (
             "<tool_call><function=search>"
             "<parameter=query>first programmer</parameter>"
             "</function></tool_call>"
         )
+        reasoned_call = f"We need biographical evidence first.\n{valid_call}"
 
         self.assertEqual(parse_search_query(valid_call), "first programmer")
+        self.assertEqual(parse_search_query(reasoned_call), "first programmer")
         self.assertIsNone(parse_search_query("<search>first programmer</search>"))
-        self.assertIsNone(parse_search_query(f"please search {valid_call}"))
+        self.assertIsNone(parse_search_query(f"{valid_call}\nthen answer"))
         self.assertIsNone(parse_search_query(valid_call + valid_call))
         self.assertIsNone(
             parse_search_query(

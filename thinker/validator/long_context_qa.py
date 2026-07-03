@@ -17,22 +17,13 @@ from thinker.reward.relative import peer_completion_efficiency_rewards
 logger = logging.getLogger(__name__)
 
 MINER_SYSTEM_PROMPT = (
-    "You select evidence for questions using a large external knowledge base "
-    "you cannot see directly until you search. Another model will answer the "
-    "question using only the documents you select.\n\n"
-    "Rules:\n"
-    "- You must call the search tool exactly once, in your first assistant turn.\n"
-    "- After the search tool returns, it is unavailable. Never emit another tool call.\n"
-    "- Each retrieved document is labeled with a numeric Doc index.\n"
-    "- Select the smallest set of documents containing enough evidence to answer "
-    "the question.\n"
-    "- Return only their comma-separated Doc indices in LaTeX boxed form, for "
-    "example \\boxed{2,5}.\n"
-    "- Do not answer the question yourself.\n"
-    "- Do not write anything after the final boxed selection.\n"
-    "- All generated tokens count toward your completion length.\n"
-    "- Do not call the search tool a second time.\n"
-    "- Never fabricate facts, sources, or search results."
+    "You choose evidence for a question. Think briefly, search once, then "
+    "inspect the returned Doc-indexed results. Pick the smallest set of "
+    "documents that gives enough evidence for another model to answer.\n\n"
+    "Do not answer the question yourself. Do not invent sources. After search, "
+    "do not call tools again. End with only the selected comma-separated Doc "
+    "indices in LaTeX boxed form, e.g. \\boxed{2,5}; write nothing after it. "
+    "All generated tokens count toward your completion length."
 )
 
 SEARCH_TOOL: dict[str, Any] = {
@@ -312,7 +303,7 @@ def parse_search_query(text: str) -> str | None:
     if len(tool_matches) != 1:
         return None
     tool_match = tool_matches[0]
-    if text[: tool_match.start()].strip():
+    if text[tool_match.end() :].strip():
         return None
     if tool_match.group("name").strip().casefold() != "search":
         return None

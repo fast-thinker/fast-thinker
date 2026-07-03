@@ -636,6 +636,84 @@ class EpochLoop:
                 + json.dumps(payload, ensure_ascii=False, sort_keys=True)
             )
 
+    @staticmethod
+    def _math_gold_answer(instance: ProblemInstance) -> str | None:
+        track = get_track(instance.track)
+        make_instance = getattr(track, "_instance", None)
+        if not callable(make_instance):
+            return None
+        try:
+            track_instance = make_instance(instance.seed)
+        except Exception:
+            return None
+
+        get_solution = getattr(track_instance, "get_solution", None)
+        if callable(get_solution):
+            try:
+                return str(get_solution())
+            except Exception:
+                pass
+        for attribute in ("gold_answer", "answer", "solution"):
+            if not hasattr(track_instance, attribute):
+                continue
+            value = getattr(track_instance, attribute)
+            if isinstance(value, (list, tuple)):
+                return ", ".join(str(item) for item in value)
+            return str(value)
+        return None
+
+    def _log_test_math_samples(
+        self,
+        batch: list[ProblemInstance],
+        original_rollouts: list[OriginalRollout],
+        completions_by_miner: dict[str, list[tuple[str, int]]],
+        scores_by_miner: dict[str, list[float]],
+        errors_by_miner: dict[str, str],
+    ) -> None:
+        if not batch:
+            self._log("test mode math sample: no math problem available")
+            return
+        index = 0
+        instance = batch[index]
+        original = original_rollouts[index] if index < len(original_rollouts) else None
+        self._log("test mode math: logging full sample 1 for each miner")
+
+        miner_ids = sorted(set(completions_by_miner) | set(errors_by_miner))
+        for miner_id in miner_ids:
+            payload: dict[str, Any] = {
+                "sample": index + 1,
+                "seed": instance.seed,
+                "track": instance.track,
+                "problem": instance.prompt,
+                "gold_answer": self._math_gold_answer(instance),
+                "miner": miner_id,
+            }
+            if original is not None:
+                payload["baseline"] = {
+                    "verified": original.verified,
+                    "tokens": original.completion_len,
+                }
+            if miner_id in errors_by_miner:
+                payload["error"] = errors_by_miner[miner_id]
+            else:
+                completions = completions_by_miner.get(miner_id, [])
+                if index >= len(completions):
+                    payload["error"] = "missing sample completion"
+                else:
+                    completion, token_count = completions[index]
+                    payload["miner_response"] = completion
+                    payload["tokens"] = token_count
+                    payload["verified"] = get_track(instance.track).verify(
+                        instance.seed, completion
+                    )
+                    scores = scores_by_miner.get(miner_id)
+                    if scores is not None and index < len(scores):
+                        payload["reward"] = scores[index]
+            self._log(
+                "test mode math sample "
+                + json.dumps(payload, ensure_ascii=False, sort_keys=True)
+            )
+
     def build_batch(
         self,
         n_problems: int | None = None,
@@ -2060,6 +2138,13 @@ class EpochLoop:
             batch,
             original_rollouts,
             math_completions,
+        )
+        self._log_test_math_samples(
+            batch,
+            original_rollouts,
+            math_completions,
+            math_scores,
+            math_errors,
         )
 
         results: dict[str, MinerEpochResult] = {}
