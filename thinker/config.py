@@ -126,6 +126,12 @@ class ThinkerConfig:
     score_weight_multiple_choice: float = field(
         default_factory=lambda: _env_float("THINKER_SCORE_WEIGHT_MULTIPLE_CHOICE", 0.20)
     )
+    problem_weight_floor: float = field(
+        default_factory=lambda: _env_float("THINKER_PROBLEM_WEIGHT_FLOOR", 0.05)
+    )
+    problem_weight_gamma: float = field(
+        default_factory=lambda: _env_float("THINKER_PROBLEM_WEIGHT_GAMMA", 0.5)
+    )
 
     synthesized_enabled: bool = field(
         default_factory=lambda: _env_bool("THINKER_SYNTHESIZED_ENABLED", True)

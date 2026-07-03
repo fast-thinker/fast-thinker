@@ -266,13 +266,26 @@ rewards are:
 
 Problem rewards are grouped by task and difficulty before being combined. Math
 problems are divided into difficulty bands, while long-context and
-multiple-choice problems have their own groups. The evaluator averages within
-each group and then combines the group results.
+multiple-choice problems have their own groups. Within each group, problems are
+weighted by peer correctness: rarely solved problems count more, while problems
+that every miner solves or no miner solves retain only a small positive weight.
 
-With `N_d` problems in group `d`, the group and overall scores are:
+For problem `i`, let:
 
 ```text
-group_score(d) = sum(problem rewards in d) / N_d
+p_i = number of miners correct on i / number of miners evaluated on i
+
+if number correct is 0 or all miners are correct:
+    w_i = floor
+else:
+    w_i = floor + (1 - floor) * (1 - p_i)^gamma
+```
+
+The defaults are `floor = 0.05` and `gamma = 0.5`. With `N_d` problems in group
+`d`, the group and overall scores are:
+
+```text
+group_score(d) = sum(w_i * problem_reward_i for i in d) / sum(w_i for i in d)
 overall_score  = sum(group scores) / number of populated groups
 ```
 

@@ -152,6 +152,7 @@ class QualificationScoringCache:
     long_context_errors: dict[str, str]
     multiple_choice_results: dict[str, list[MultipleChoiceMinerResult]]
     multiple_choice_errors: dict[str, str]
+    sample_weights: dict[tuple[str, str], float]
 
 
 class EpochLoop:
@@ -301,6 +302,87 @@ class EpochLoop:
             value * max(0.0, weights.get(task, 0.0))
             for task, value in available.items()
         ) / total_weight
+
+    def _problem_weight(self, correct_count: int, total_count: int) -> float:
+        floor = min(1.0, max(0.0, float(self._config.problem_weight_floor)))
+        gamma = max(0.0, float(self._config.problem_weight_gamma))
+        total = max(0, int(total_count))
+        correct = min(total, max(0, int(correct_count)))
+        if total <= 0 or correct == 0 or correct == total:
+            return floor
+        p_correct = correct / total
+        return floor + (1.0 - floor) * ((1.0 - p_correct) ** gamma)
+
+    def _math_sample_weights(
+        self,
+        batch: list[ProblemInstance],
+        completions_by_miner: dict[str, list[tuple[str, int]]],
+    ) -> dict[tuple[str, str], float]:
+        weights: dict[tuple[str, str], float] = {}
+        for index, instance in enumerate(batch):
+            total = 0
+            correct = 0
+            track = get_track(instance.track)
+            for completions in completions_by_miner.values():
+                if index >= len(completions):
+                    continue
+                total += 1
+                if track.verify(instance.seed, completions[index][0]):
+                    correct += 1
+            weights[(instance.track, instance.seed)] = self._problem_weight(
+                correct, total
+            )
+        return weights
+
+    def _long_context_sample_weights(
+        self,
+        batch: list[LongContextQAInstance],
+        results_by_miner: dict[str, list[LongContextMinerResult]],
+    ) -> dict[tuple[str, str], float]:
+        weights: dict[tuple[str, str], float] = {}
+        for index, instance in enumerate(batch):
+            total = 0
+            correct = 0
+            for results in results_by_miner.values():
+                if index >= len(results):
+                    continue
+                total += 1
+                if results[index].miner.verified:
+                    correct += 1
+            weights[(TASK_LONG_CONTEXT_QA, instance.seed)] = self._problem_weight(
+                correct, total
+            )
+        return weights
+
+    def _multiple_choice_sample_weights(
+        self,
+        batch: list[MultipleChoiceInstance],
+        results_by_miner: dict[str, list[MultipleChoiceMinerResult]],
+    ) -> dict[tuple[str, str], float]:
+        weights: dict[tuple[str, str], float] = {}
+        for index, instance in enumerate(batch):
+            total = 0
+            correct = 0
+            for results in results_by_miner.values():
+                if index >= len(results):
+                    continue
+                total += 1
+                if results[index].miner.verified:
+                    correct += 1
+            weights[(TASK_MULTIPLE_CHOICE, instance.seed)] = self._problem_weight(
+                correct, total
+            )
+        return weights
+
+    @staticmethod
+    def _sample_weight(
+        sample_weights: dict[tuple[str, str], float] | None,
+        track: str,
+        seed: str,
+    ) -> float:
+        if sample_weights is None:
+            return 1.0
+        return float(sample_weights.get((track, seed), 1.0))
 
     def _score_rollouts_by_task(
         self,
@@ -1528,6 +1610,7 @@ class EpochLoop:
         *,
         precomputed_math_completions: list[tuple[str, int]] | None = None,
         precomputed_math_scores: list[float] | None = None,
+        sample_weights: dict[tuple[str, str], float] | None = None,
     ) -> tuple[list[RolloutResult], str | None]:
         miner_id = prepared.miner_id
         if len(original_rollouts) != len(batch):
@@ -1595,6 +1678,9 @@ class EpochLoop:
                     seed=instance.seed,
                     band=band,
                     score=rollout_score,
+                    sample_weight=self._sample_weight(
+                        sample_weights, instance.track, instance.seed
+                    ),
                     original_verified=original.verified,
                     miner_verified=miner_verified,
                     original_completion_len=original.completion_len,
@@ -1610,6 +1696,7 @@ class EpochLoop:
         originals: list[LongContextAnswer] | None,
         *,
         precomputed_results: list[LongContextMinerResult] | None = None,
+        sample_weights: dict[tuple[str, str], float] | None = None,
     ) -> tuple[list[RolloutResult], str | None]:
         miner_id = prepared.miner_id
         if not batch:
@@ -1660,6 +1747,9 @@ class EpochLoop:
                     seed=instance.seed,
                     band="long_context_qa",
                     score=result.score,
+                    sample_weight=self._sample_weight(
+                        sample_weights, TASK_LONG_CONTEXT_QA, instance.seed
+                    ),
                     original_verified=result.original.verified,
                     miner_verified=result.miner.verified,
                     original_completion_len=result.original.completion_len,
@@ -1681,6 +1771,7 @@ class EpochLoop:
         precomputed_math_completions: list[tuple[str, int]] | None = None,
         precomputed_math_scores: list[float] | None = None,
         precomputed_long_context_results: list[LongContextMinerResult] | None = None,
+        sample_weights: dict[tuple[str, str], float] | None = None,
     ) -> MinerEpochResult:
         miner_id = prepared.miner_id
         math_rollouts, error = self._math_rollouts_for_prepared_miner(
@@ -1689,6 +1780,7 @@ class EpochLoop:
             original_rollouts,
             precomputed_math_completions=precomputed_math_completions,
             precomputed_math_scores=precomputed_math_scores,
+            sample_weights=sample_weights,
         )
         if error is not None:
             return MinerEpochResult(miner_id, None, error)
@@ -1698,6 +1790,7 @@ class EpochLoop:
             long_context_batch or [],
             original_long_context,
             precomputed_results=precomputed_long_context_results,
+            sample_weights=sample_weights,
         )
         if error is not None:
             return MinerEpochResult(miner_id, None, error)
@@ -1716,6 +1809,7 @@ class EpochLoop:
         originals: list[MultipleChoiceAnswer],
         *,
         precomputed_results: list[MultipleChoiceMinerResult] | None = None,
+        sample_weights: dict[tuple[str, str], float] | None = None,
     ) -> MinerEpochResult:
         miner_id = prepared.miner_id
         if not batch:
@@ -1745,7 +1839,13 @@ class EpochLoop:
                     f"multiple_choice_mismatch: {len(scored)} answers for {len(batch)} samples",
                 )
             rollouts = [
-                multiple_choice_rollout_result(instance, result)
+                multiple_choice_rollout_result(
+                    instance,
+                    result,
+                    sample_weight=self._sample_weight(
+                        sample_weights, TASK_MULTIPLE_CHOICE, instance.seed
+                    ),
+                )
                 for instance, result in zip(batch, scored)
             ]
             score, task_scores = self._score_rollouts_by_task(
@@ -2070,6 +2170,12 @@ class EpochLoop:
             epoch_batch.long_context_qa,
             original_long_context,
         )
+        sample_weights = {
+            **self._math_sample_weights(epoch_batch.math, math_completions),
+            **self._long_context_sample_weights(
+                epoch_batch.long_context_qa, long_context_results
+            ),
+        }
 
         total = len(prepared)
         for idx, (miner_id, prepared_submission) in enumerate(prepared.items(), start=1):
@@ -2093,6 +2199,7 @@ class EpochLoop:
                     precomputed_math_completions=math_completions.get(miner_id, []),
                     precomputed_math_scores=math_scores.get(miner_id),
                     precomputed_long_context_results=long_context_results.get(miner_id),
+                    sample_weights=sample_weights,
                 )
             results[miner_id] = result
             self._log(
@@ -2169,6 +2276,7 @@ class EpochLoop:
             original_rollouts,
             math_completions,
         )
+        sample_weights = self._math_sample_weights(batch, math_completions)
         self._log_test_math_samples(
             batch,
             original_rollouts,
@@ -2197,6 +2305,7 @@ class EpochLoop:
                     precomputed_math_completions=math_completions.get(miner_id, []),
                     precomputed_math_scores=math_scores.get(miner_id),
                     precomputed_long_context_results=[],
+                    sample_weights=sample_weights,
                 )
             results[miner_id] = result
             self._log(
@@ -2232,6 +2341,9 @@ class EpochLoop:
                 original_long_context,
             )
         )
+        sample_weights = self._long_context_sample_weights(
+            batch, long_context_results
+        )
         self._log_test_long_context_samples(
             batch,
             original_long_context,
@@ -2260,6 +2372,7 @@ class EpochLoop:
                     precomputed_math_completions=[],
                     precomputed_math_scores=[],
                     precomputed_long_context_results=long_context_results.get(miner_id),
+                    sample_weights=sample_weights,
                 )
             results[miner_id] = result
             self._log(
@@ -2301,6 +2414,9 @@ class EpochLoop:
                 originals,
             )
         )
+        sample_weights = self._multiple_choice_sample_weights(
+            batch, multiple_choice_results
+        )
 
         results: dict[str, MinerEpochResult] = {}
         total = len(prepared)
@@ -2319,6 +2435,7 @@ class EpochLoop:
                     batch,
                     originals,
                     precomputed_results=multiple_choice_results.get(miner_id),
+                    sample_weights=sample_weights,
                 )
             results[miner_id] = result
             self._log(
@@ -2621,6 +2738,16 @@ class EpochLoop:
                 )
             )
 
+        sample_weights = {
+            **self._math_sample_weights(qualification_batch.math, math_completions),
+            **self._long_context_sample_weights(
+                qualification_batch.long_context_qa, long_context_results
+            ),
+            **self._multiple_choice_sample_weights(
+                multiple_choice_batch, multiple_choice_results
+            ),
+        }
+
         return QualificationScoringCache(
             math_completions=math_completions,
             math_scores=math_scores,
@@ -2629,6 +2756,7 @@ class EpochLoop:
             long_context_errors=long_context_errors,
             multiple_choice_results=multiple_choice_results,
             multiple_choice_errors=multiple_choice_errors,
+            sample_weights=sample_weights,
         )
 
     def _qualification_result_for_miner(
@@ -2676,6 +2804,7 @@ class EpochLoop:
                         precomputed_long_context_results=(
                             cache.long_context_results.get(miner_id)
                         ),
+                        sample_weights=cache.sample_weights,
                     )
                 )
         if multiple_choice_batch:
@@ -2697,6 +2826,7 @@ class EpochLoop:
                         precomputed_results=(
                             cache.multiple_choice_results.get(miner_id)
                         ),
+                        sample_weights=cache.sample_weights,
                     )
                 )
         return self._combine_scored_results(miner_id, result_parts)
@@ -2948,6 +3078,7 @@ class EpochLoop:
         math_errors: dict[str, str],
         long_context_results: dict[str, list[LongContextMinerResult]],
         long_context_errors: dict[str, str],
+        sample_weights: dict[tuple[str, str], float],
         eval_key: str,
         history_snapshot: dict[str, float | None],
     ) -> MinerEpochResult:
@@ -2972,6 +3103,7 @@ class EpochLoop:
             precomputed_math_completions=math_completions.get(miner_id, []),
             precomputed_math_scores=math_scores.get(miner_id),
             precomputed_long_context_results=long_context_results.get(miner_id),
+            sample_weights=sample_weights,
         )
         return self._apply_full_eval_ema(
             prepared,
@@ -3028,6 +3160,12 @@ class EpochLoop:
                 original_long_context,
             )
         )
+        sample_weights = {
+            **self._math_sample_weights(full_batch.math, math_completions),
+            **self._long_context_sample_weights(
+                full_batch.long_context_qa, long_context_results
+            ),
+        }
 
         total = len(ordered_miners)
         for index, miner_id in enumerate(ordered_miners, start=1):
@@ -3046,6 +3184,7 @@ class EpochLoop:
                 math_errors=math_errors,
                 long_context_results=long_context_results,
                 long_context_errors=long_context_errors,
+                sample_weights=sample_weights,
                 eval_key=eval_key,
                 history_snapshot=history_snapshot,
             )

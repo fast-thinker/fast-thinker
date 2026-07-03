@@ -12,6 +12,7 @@ tests/*
 !tests/test_relative_reward.py
 !tests/test_long_context_qa.py
 !tests/test_retrieval_server.py
+!tests/test_scoring.py
 .venv/
 venv/
 

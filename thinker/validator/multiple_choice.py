@@ -582,12 +582,15 @@ class MultipleChoiceEvaluator:
 def rollout_result(
     instance: MultipleChoiceInstance,
     result: MultipleChoiceMinerResult,
+    *,
+    sample_weight: float = 1.0,
 ) -> RolloutResult:
     return RolloutResult(
         track=MULTIPLE_CHOICE_BAND,
         seed=instance.seed,
         band=MULTIPLE_CHOICE_BAND,
         score=result.score,
+        sample_weight=sample_weight,
         original_verified=result.original.verified,
         miner_verified=result.miner.verified,
         original_completion_len=result.original.completion_len,

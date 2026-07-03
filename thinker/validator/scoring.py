@@ -10,6 +10,7 @@ class RolloutResult:
     seed: str
     band: str
     score: float
+    sample_weight: float = 1.0
     original_verified: bool | None = None
     miner_verified: bool | None = None
     original_completion_len: int | None = None
@@ -36,9 +37,9 @@ def stratified_score(
     min_coverage_per_band: int = 1,
     required_bands: set[str] | None = None,
 ) -> StratifiedScore:
-    by_band: dict[str, list[float]] = defaultdict(list)
+    by_band: dict[str, list[tuple[float, float]]] = defaultdict(list)
     for r in results:
-        by_band[r.band].append(r.score)
+        by_band[r.band].append((r.score, max(0.0, float(r.sample_weight))))
 
     if required_bands is not None:
         missing = required_bands - set(by_band)
@@ -59,6 +60,14 @@ def stratified_score(
             reason=f"under-covered bands: {under_covered}",
         )
 
-    per_band = {band: sum(vals) / len(vals) for band, vals in by_band.items()}
+    per_band: dict[str, float] = {}
+    for band, vals in by_band.items():
+        total_weight = sum(weight for _score, weight in vals)
+        if total_weight > 0:
+            per_band[band] = (
+                sum(score * weight for score, weight in vals) / total_weight
+            )
+        else:
+            per_band[band] = sum(score for score, _weight in vals) / len(vals)
     overall = sum(per_band.values()) / len(per_band) if per_band else 0.0
     return StratifiedScore(overall=overall, per_band=per_band, coverage_ok=True, reason=None)
