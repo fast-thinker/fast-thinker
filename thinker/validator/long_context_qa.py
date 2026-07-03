@@ -72,6 +72,11 @@ LOOSE_SEARCH_RE = re.compile(r"<search>(.*?)<search>", re.DOTALL | re.IGNORECASE
 BOXED_START_RE = re.compile(r"\\boxed\s*\{")
 LOG_SNIPPET_CHARS = 500
 MAX_REVISED_QUESTION_WORDS = 24
+REJECTED_REVISION_SCAFFOLDS = (
+    "foggy decoy",
+    "cerulean aside",
+    "stray aside",
+)
 
 
 def _log_snippet(text: str | None) -> str:
@@ -284,6 +289,9 @@ def _parse_revised_question(text: str) -> str:
             "question revision must be short "
             f"({word_count}>{MAX_REVISED_QUESTION_WORDS} words)"
         )
+    lowered_question = question.casefold()
+    if any(scaffold in lowered_question for scaffold in REJECTED_REVISION_SCAFFOLDS):
+        raise ValueError("question revision copied a prompt scaffold phrase")
     return question
 
 
@@ -1757,19 +1765,20 @@ class LongContextQAEvaluator:
             for index in instance.supporting_document_indices
         ]
         return (
-            "Rewrite only the question below into a short, tricky HotpotQA-style "
-            "question while keeping exactly the same unambiguous answer.\n\n"
+            "Rewrite only the question below as if it came from a real user who is "
+            "trying to find information but does not know the exact names or best "
+            "search terms. Keep exactly the same unambiguous answer.\n\n"
             "Hard constraints:\n"
             f"- Use at most {MAX_REVISED_QUESTION_WORDS} words, one sentence, ending in '?'.\n"
             "- Preserve the bridge or comparison structure: both supporting documents "
             "must remain necessary.\n"
-            "- Be oblique and slightly ambiguous on the surface, but answerable from "
-            "the documents.\n"
-            "- Replace direct names, titles, exact dates, rare terms, and copied "
-            "phrases with short role-based clues.\n"
-            "- Add exactly one harmless noise word or aside that does not change the "
-            "meaning, such as 'cerulean', 'after the stray aside', or 'with a foggy "
-            "decoy'. Do not make the noise a new factual requirement.\n"
+            "- Sound like a bad real search/query: vague, under-specified, casual, "
+            "and slightly messy, but still answerable from the documents.\n"
+            "- Prefer common words, roles, relationships, and half-remembered clues "
+            "over direct names, titles, exact dates, rare terms, or copied phrases.\n"
+            "- Natural user noise is allowed: filler words, a vague setting, or an "
+            "uncertain phrase like 'that thing', 'the guy', or 'I forgot the name'. "
+            "Do not add random words or make the noise a new factual requirement.\n"
             "- Do not state the answer, supporting titles, distinctive phrases copied "
             "from the documents, or a chain of background details.\n"
             "- Do not split the question into two independent subquestions.\n\n"
@@ -1777,11 +1786,11 @@ class LongContextQAEvaluator:
             "Bad: Based on the defense counsel's speculation, what specific digital "
             "interaction logged on a social platform challenged the father's account "
             "of his daughter's departure time?\n"
-            "Good: What logged social-site activity, with a foggy decoy, undercut the "
-            "father's timing claim?\n\n"
+            "Good: What was that social-site activity that made the dad's timing story "
+            "look wrong?\n\n"
             "Bad: Who is the father of the individual who served as the 11th President "
             "of the United States and was noted for owning enslaved people?\n"
-            "Good: Who fathered that enslaver-president, after the cerulean aside?\n\n"
+            "Good: Who was the dad of that slave-owning president, I forgot his name?\n\n"
             f"Original question:\n{instance.question}\n\n"
             f"Preserved answer (do not output it):\n{instance.gold_answer}\n\n"
             f"Supporting titles (do not output them):\n{json.dumps(support_titles, ensure_ascii=False)}\n\n"

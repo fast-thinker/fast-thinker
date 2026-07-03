@@ -248,6 +248,12 @@ class LongContextEvidenceSelectionTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             _parse_revised_question(long_question)
 
+    def test_revised_question_rejects_copied_noise_scaffold(self) -> None:
+        with self.assertRaises(ValueError):
+            _parse_revised_question(
+                '{"question": "Which firm, with a foggy decoy, bought the molds?"}'
+            )
+
     def test_baseline_directly_retrieves_top_five_and_answers(self) -> None:
         answer = self.evaluator.score_original_batch([self.instance])[0]
 
