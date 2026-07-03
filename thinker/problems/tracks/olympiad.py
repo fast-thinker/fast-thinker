@@ -7,10 +7,13 @@ import random
 import re
 from dataclasses import dataclass
 
-from thinker.problems.interface import Difficulty, register_track
+from thinker.problems.interface import (
+    Difficulty,
+    extract_final_boxed_answer,
+    register_track,
+)
 
 
-_BOXED_RE = re.compile(r"\\boxed\s*\{\s*([^{}]+?)\s*\}", re.DOTALL)
 _INTEGER_RE = re.compile(r"[+-]?\d+")
 
 
@@ -535,13 +538,12 @@ def _quality_gate(spec: OlympiadSpec, answer: int, prompt: str) -> bool:
 
 
 def _extract_boxed_integer(output: str) -> int | None:
-    matches = _BOXED_RE.findall(output)
-    if not matches:
+    answer = extract_final_boxed_answer(output)
+    if answer is None:
         return None
-    candidate = matches[-1].strip()
-    if _INTEGER_RE.fullmatch(candidate) is None:
+    if _INTEGER_RE.fullmatch(answer) is None:
         return None
-    return int(candidate)
+    return int(answer)
 
 
 class OlympiadTrack:

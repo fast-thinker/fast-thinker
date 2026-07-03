@@ -7,9 +7,12 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable
 
-from thinker.problems.interface import Difficulty, register_track
+from thinker.problems.interface import (
+    Difficulty,
+    extract_final_boxed_answer,
+    register_track,
+)
 
-_BOXED_RE = re.compile(r"\\boxed\{([^{}]*)\}", re.DOTALL)
 _INT_RE = re.compile(r"-?\d+")
 
 
@@ -22,14 +25,8 @@ def _rng(seed: str) -> random.Random:
     return random.Random(_int_seed(seed, "constructive"))
 
 
-def _last_boxed(text: str) -> str | None:
-    matches = _BOXED_RE.findall(text)
-    return matches[-1].strip() if matches else None
-
-
 def _candidate_ints(output: str) -> list[int]:
-    content = _last_boxed(output) or output
-    return [int(match.group(0)) for match in _INT_RE.finditer(content)]
+    return [int(match.group(0)) for match in _INT_RE.finditer(output)]
 
 
 def _coprime_pair(rng: random.Random, lo: int, hi: int) -> tuple[int, int]:
@@ -275,8 +272,6 @@ _FAMILIES: tuple[Callable[[random.Random], ConstructiveInstance], ...] = (
     _mod_inverse,
     _linear_diophantine,
     _crt,
-    _egyptian_fraction,
-    _gcd_lcm,
     _pythagorean,
     _quadratic_residue,
 )
@@ -296,8 +291,11 @@ class ConstructiveTrack:
         return self._instance(seed).prompt
 
     def verify(self, seed: str, output: str) -> bool:
+        answer = extract_final_boxed_answer(output)
+        if answer is None:
+            return False
         try:
-            return bool(self._instance(seed).checker(_candidate_ints(output)))
+            return bool(self._instance(seed).checker(_candidate_ints(answer)))
         except Exception:
             return False
 

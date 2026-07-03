@@ -54,6 +54,10 @@ from thinker.validator.multiple_choice import (
 TASK_MATH = "math"
 TASK_LONG_CONTEXT_QA = "long_context_qa"
 TASK_MULTIPLE_CHOICE = "multiple_choice"
+MATH_SYSTEM_PROMPT = (
+    "Solve the math problem carefully. End with exactly one final answer in LaTeX "
+    "\\boxed{...} form and write nothing after it. Do not use \\boxed anywhere else."
+)
 
 
 @dataclass(frozen=True)
@@ -70,6 +74,17 @@ class SubmissionTransport(Protocol):
 
 class InferenceBackend(Protocol):
     def generate_original(self, prompts: list[str]) -> list[tuple[str, int]]:
+        ...
+
+    def generate_original_limited(
+        self,
+        prompts: list[str],
+        *,
+        max_new_tokens: int | None,
+        enable_thinking: bool = True,
+        system_prompt: str | None = None,
+        stop: list[str] | None = None,
+    ) -> list[tuple[str, int]]:
         ...
 
     def generate_limited(
@@ -1288,6 +1303,7 @@ class EpochLoop:
                         adapter_files,
                         chunk_prompts,
                         max_new_tokens=budget,
+                        system_prompt=MATH_SYSTEM_PROMPT,
                     ),
                     len(indexes),
                 )
@@ -1348,7 +1364,9 @@ class EpochLoop:
                 suppress_inference=True,
             ) as progress:
                 flat_completions = self._inference.generate_for_miners_batch(
-                    requests, max_new_tokens_list=max_new_tokens_list
+                    requests,
+                    max_new_tokens_list=max_new_tokens_list,
+                    system_prompt=MATH_SYSTEM_PROMPT,
                 )
                 progress.update(len(requests))
             if len(flat_completions) != len(requests):
@@ -1633,7 +1651,14 @@ class EpochLoop:
             suppress_inference=True,
         ) as progress:
             completions = self._validate_completion_count(
-                "original_model", self._inference.generate_original(prompts), len(batch)
+                "original_model",
+                self._inference.generate_original_limited(
+                    prompts,
+                    max_new_tokens=None,
+                    enable_thinking=True,
+                    system_prompt=MATH_SYSTEM_PROMPT,
+                ),
+                len(batch),
             )
             progress.update(len(prompts))
         if completions:

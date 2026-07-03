@@ -155,12 +155,31 @@ Full evaluation uses a broader reasoning workload. The current defaults are:
 Generated math includes exact-verification tracks and a procedural Reasoning Gym
 track. The built-in exact generators and default procedural generators use
 expanded variable ranges so each family has a large prompt space instead of a
-small enumerable table. The procedural track uses a harder default generator
-subset, avoiding trivial arithmetic, factorization, base-conversion, and similar
-direct-answer generators unless an evaluator explicitly overrides the generator
-list. If those small default Reasoning Gym categories are enabled, the validator
-supplies wider value ranges than the package defaults so they do not collapse
-into tiny lookup tables.
+small enumerable table. The procedural track defaults only to polynomial
+equations, intermediate integration, and advanced geometry. The elementary
+`gsm_symbolic` word-problem family is not supported. Short mechanical generators
+such as simple integration, polynomial multiplication, arithmetic,
+factorization, base conversion, direct exponentiation, basic number sequences,
+and calendar arithmetic require an explicit generator-list override. Wider
+value ranges alone do not make those one-step families difficult. If they are
+enabled, the validator still supplies wider ranges than the package defaults so
+they do not collapse into tiny lookup tables.
+
+The remaining procedural generators have minimum structural complexity.
+Polynomial equations are cubic or higher with at least four terms;
+intermediate integration uses only polynomial-times-exponential/trigonometric,
+cyclic, and repeated integration-by-parts forms; and advanced geometry uses
+orthocenter and incircle-radius tasks rather than direct angle calculation.
+
+The constructive track excludes Egyptian-fraction and GCD/LCM construction
+templates because fixed one-step witnesses solve every instance. It retains
+modular inverse, linear Diophantine, CRT, Pythagorean, and quadratic-residue
+families.
+
+All math tracks require one final `\boxed{...}` answer with no trailing text.
+Only the boxed payload reaches the track-specific semantic verifier, preserving
+symbolic equivalence and alternate constructive witnesses while enforcing one
+consistent output contract.
 
 Long-context problems are open-answer tasks for the validator, but candidates
 do not answer them directly. A candidate must search once, receives indexed

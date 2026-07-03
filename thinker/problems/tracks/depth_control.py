@@ -5,13 +5,16 @@ import random
 import re
 from dataclasses import dataclass
 
-from thinker.problems.interface import Difficulty, register_track
+from thinker.problems.interface import (
+    Difficulty,
+    extract_final_boxed_answer,
+    register_track,
+)
 
 MIN_OP = 8
 MAX_OP = 60
 
 _VAR_PATTERN = re.compile(r"V\d{6}")
-_BOXED_RE = re.compile(r"\\boxed\{([^{}]*)\}", re.DOTALL)
 
 
 @dataclass(frozen=True)
@@ -56,10 +59,8 @@ def _random_non_target(rng: random.Random, target: int) -> int:
     return value
 
 
-def _boxed_or_all_vars(output: str) -> set[str]:
-    boxed = _BOXED_RE.findall(output)
-    text = boxed[-1] if boxed else output
-    return set(_VAR_PATTERN.findall(text))
+def _answer_vars(output: str) -> set[str]:
+    return set(_VAR_PATTERN.findall(output))
 
 
 class DepthControlTrack:
@@ -136,8 +137,11 @@ class DepthControlTrack:
         return _symbolic_prompt(task.query_value, context)
 
     def verify(self, seed: str, output: str) -> bool:
+        answer = extract_final_boxed_answer(output)
+        if answer is None:
+            return False
         task = self._build_task(seed)
-        return _boxed_or_all_vars(output) == set(task.query_list)
+        return _answer_vars(answer) == set(task.query_list)
 
     def difficulty(self, seed: str) -> Difficulty:
         task = self._build_task(seed)

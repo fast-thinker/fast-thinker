@@ -8,7 +8,11 @@ import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from thinker.problems.interface import Difficulty, register_track
+from thinker.problems.interface import (
+    Difficulty,
+    extract_final_boxed_answer,
+    register_track,
+)
 from thinker.reward.verify import check_equivalence
 
 DEFAULT_DATASET = "nvidia/Nemotron-Math-v2"
@@ -152,30 +156,6 @@ def _int_seed(seed: str, salt: str) -> int:
 
 def _clean_text(value: Any) -> str:
     return str(value or "").strip()
-
-
-def _extract_last_boxed(text: str) -> str | None:
-    marker = r"\boxed{"
-    start = text.rfind(marker)
-    if start < 0:
-        return None
-    index = start + len(marker)
-    depth = 1
-    chars: list[str] = []
-    while index < len(text):
-        ch = text[index]
-        if ch == "{":
-            depth += 1
-            chars.append(ch)
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return "".join(chars).strip()
-            chars.append(ch)
-        else:
-            chars.append(ch)
-        index += 1
-    return None
 
 
 def _row_problem(row: dict[str, Any]) -> str:
@@ -371,7 +351,7 @@ class SynthesizedTrack:
 
     def verify(self, seed: str, output: str) -> bool:
         gold = self._instance(seed).gold_answer
-        boxed = _extract_last_boxed(output)
+        boxed = extract_final_boxed_answer(output)
         if boxed is None:
             return False
         try:

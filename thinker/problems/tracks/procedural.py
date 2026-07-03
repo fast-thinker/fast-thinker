@@ -5,12 +5,15 @@ import os
 
 import reasoning_gym as rg
 
-from thinker.problems.interface import Difficulty, register_track
+from thinker.problems.interface import (
+    Difficulty,
+    extract_final_boxed_answer,
+    register_track,
+)
 
 ALL_GENERATOR_NAMES: tuple[str, ...] = (
     "gcd",
     "lcm",
-    "gsm_symbolic",
     "simple_equations",
     "polynomial_equations",
     "intermediate_integration",
@@ -32,30 +35,31 @@ ALL_GENERATOR_NAMES: tuple[str, ...] = (
     "simple_geometry",
 )
 DEFAULT_GENERATOR_NAMES: tuple[str, ...] = (
-    "gsm_symbolic",
     "polynomial_equations",
     "intermediate_integration",
-    "simple_integration",
-    "polynomial_multiplication",
-    "power_function",
-    "number_sequence",
-    "calendar_arithmetic",
     "advanced_geometry",
 )
 GENERATOR_CONFIGS: dict[str, dict[str, object]] = {
     "polynomial_equations": {
-        "min_terms": 3,
+        "min_terms": 4,
         "max_terms": 6,
         "min_value": 10,
         "max_value": 10_000,
-        "min_degree": 2,
+        "min_degree": 3,
         "max_degree": 5,
     },
     "intermediate_integration": {
+        "problem_types": (
+            "polynomial_exp_trig",
+            "cyclic",
+            "repeated_parts",
+        ),
+        "problem_type_weights": (1.0, 1.0, 1.0),
         "linear_upper_bound": 100,
         "min_linear_degree": 2,
         "max_linear_degree": 8,
         "outer_constant_max": 10,
+        "min_poly_degree": 3,
         "max_poly_degree": 8,
     },
     "simple_integration": {
@@ -113,6 +117,7 @@ GENERATOR_CONFIGS: dict[str, dict[str, object]] = {
     "advanced_geometry": {
         "min_coord": -1_000,
         "max_coord": 1_000,
+        "task_types": ("orthocenter", "incircle_radius"),
     },
 }
 
@@ -171,9 +176,12 @@ class ProceduralTrack:
         return item["question"]
 
     def verify(self, seed: str, output: str) -> bool:
+        answer = extract_final_boxed_answer(output)
+        if answer is None:
+            return False
         _, ds, item = self._dataset_and_item(seed)
         try:
-            score = ds.score_answer(answer=output, entry=item)
+            score = ds.score_answer(answer=answer, entry=item)
         except Exception:
             return False
         return score == _EXACT_MATCH

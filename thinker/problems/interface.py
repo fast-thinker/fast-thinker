@@ -1,7 +1,37 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
+
+
+_BOXED_START_RE = re.compile(r"\\boxed\s*\{")
+
+
+def extract_final_boxed_answer(text: str) -> str | None:
+    """Return the sole final boxed payload, including support for nested braces."""
+    starts = list(_BOXED_START_RE.finditer(text))
+    if len(starts) != 1:
+        return None
+    start = starts[0]
+    depth = 1
+    chars: list[str] = []
+    for index in range(start.end(), len(text)):
+        char = text[index]
+        if char == "{":
+            depth += 1
+            chars.append(char)
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                if text[index + 1 :].strip():
+                    return None
+                answer = "".join(chars).strip()
+                return answer or None
+            chars.append(char)
+        else:
+            chars.append(char)
+    return None
 
 
 @dataclass(frozen=True)
