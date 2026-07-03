@@ -669,17 +669,57 @@ class EpochLoop:
         completions_by_miner: dict[str, list[tuple[str, int]]],
         scores_by_miner: dict[str, list[float]],
         errors_by_miner: dict[str, str],
+        miner_ids: list[str],
     ) -> None:
         if not batch:
             self._log("test mode math sample: no math problem available")
             return
-        index = 0
-        instance = batch[index]
-        original = original_rollouts[index] if index < len(original_rollouts) else None
-        self._log("test mode math: logging full sample 1 for each miner")
+        self._log(
+            "test mode math: logging first verified-correct sample for each miner"
+        )
 
-        miner_ids = sorted(set(completions_by_miner) | set(errors_by_miner))
         for miner_id in miner_ids:
+            if miner_id in errors_by_miner:
+                self._log(
+                    "test mode math sample "
+                    + json.dumps(
+                        {"miner": miner_id, "error": errors_by_miner[miner_id]},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+                continue
+
+            completions = completions_by_miner.get(miner_id, [])
+            selected: tuple[int, str, int] | None = None
+            for index, instance in enumerate(batch):
+                if index >= len(completions):
+                    continue
+                completion, token_count = completions[index]
+                if get_track(instance.track).verify(instance.seed, completion):
+                    selected = (index, completion, token_count)
+                    break
+
+            if selected is None:
+                self._log(
+                    "test mode math sample "
+                    + json.dumps(
+                        {
+                            "miner": miner_id,
+                            "error": "no verified math sample",
+                            "samples_checked": min(len(batch), len(completions)),
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+                continue
+
+            index, completion, token_count = selected
+            instance = batch[index]
+            original = (
+                original_rollouts[index] if index < len(original_rollouts) else None
+            )
             payload: dict[str, Any] = {
                 "sample": index + 1,
                 "seed": instance.seed,
@@ -693,22 +733,12 @@ class EpochLoop:
                     "verified": original.verified,
                     "tokens": original.completion_len,
                 }
-            if miner_id in errors_by_miner:
-                payload["error"] = errors_by_miner[miner_id]
-            else:
-                completions = completions_by_miner.get(miner_id, [])
-                if index >= len(completions):
-                    payload["error"] = "missing sample completion"
-                else:
-                    completion, token_count = completions[index]
-                    payload["miner_response"] = completion
-                    payload["tokens"] = token_count
-                    payload["verified"] = get_track(instance.track).verify(
-                        instance.seed, completion
-                    )
-                    scores = scores_by_miner.get(miner_id)
-                    if scores is not None and index < len(scores):
-                        payload["reward"] = scores[index]
+            payload["miner_response"] = completion
+            payload["tokens"] = token_count
+            payload["verified"] = True
+            scores = scores_by_miner.get(miner_id)
+            if scores is not None and index < len(scores):
+                payload["reward"] = scores[index]
             self._log(
                 "test mode math sample "
                 + json.dumps(payload, ensure_ascii=False, sort_keys=True)
@@ -2145,6 +2175,7 @@ class EpochLoop:
             math_completions,
             math_scores,
             math_errors,
+            list(prepared),
         )
 
         results: dict[str, MinerEpochResult] = {}
