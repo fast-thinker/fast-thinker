@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -167,6 +168,7 @@ class LongContextQAConfig:
     qa_generation_batch_size: int = 4
     qa_generation_max_new_tokens: int = 256
     qa_generation_max_attempts: int = 3
+    qa_filter_max_attempts: int = 50
     judge_max_new_tokens: int = 64
     original_answer_max_new_tokens: int = 4096
     miner_max_tokens: int = 32768
@@ -601,60 +603,125 @@ class LongContextQAEvaluator:
     def generate_instances(self, seeds: list[str]) -> list[LongContextQAInstance]:
         if not seeds:
             return []
-        prepared: list[tuple[str, CorpusDocument, tuple[RetrievalHit, ...]]] = []
-        prompts: list[str] = []
-        for seed in seeds:
-            source_document = self._retriever.random_document(seed)
-            seed_query = source_document.contents or f"{source_document.title}\n{source_document.text}"
-            seed_hits = tuple(
-                self._retriever.search(seed_query, topk=self._config.seed_context_topk)
-            )
-            if not seed_hits:
-                raise ValueError("could not retrieve seed context for long-context QA generation")
-            prepared.append((seed, source_document, seed_hits))
-            prompts.append(self._build_qa_generation_prompt(seed_hits))
+        accepted: list[LongContextQAInstance | None] = [None] * len(seeds)
+        attempts = [0] * len(seeds)
+        pending = list(range(len(seeds)))
+        max_attempts = max(1, int(self._config.qa_filter_max_attempts))
+        filter_topk = max(1, int(self._config.baseline_context_topk))
 
-        completions: list[tuple[str, int]] = []
-        chunk_size = max(1, self._config.qa_generation_batch_size)
-        with self._progress(len(prompts), "long-context QA generation") as progress:
-            for start in range(0, len(prompts), chunk_size):
-                chunk = prompts[start : start + chunk_size]
-                completions.extend(
-                    self._generate_original(
-                        chunk,
-                        max_new_tokens=self._config.qa_generation_max_new_tokens,
-                        greedy=True,
-                        progress_label=None,
+        with self._progress(len(seeds), "long-context QA generation") as progress:
+            while pending:
+                exhausted = [index for index in pending if attempts[index] >= max_attempts]
+                if exhausted:
+                    raise RuntimeError(
+                        "could not generate enough long-context questions with no "
+                        f"gold-document overlap in direct top-{filter_topk} retrieval "
+                        f"after {max_attempts} attempts per question"
                     )
-                )
-                progress.update(len(chunk))
-        if len(completions) != len(prepared):
-            raise ValueError("original model must return exactly one generated QA per seed")
 
-        qa_pairs: list[tuple[str, CorpusDocument, tuple[RetrievalHit, ...], str, str]] = []
-        for index, ((seed, source_document, seed_hits), (completion, _tokens)) in enumerate(
-            zip(prepared, completions), start=1
-        ):
-            prompt = prompts[index - 1]
-            question, gold_answer = self._parse_generated_qa_with_retries(
-                seed=seed,
-                source_document=source_document,
-                seed_hits=seed_hits,
-                prompt=prompt,
-                completion=completion,
-            )
-            qa_pairs.append((seed, source_document, seed_hits, question, gold_answer))
+                prepared: list[
+                    tuple[int, str, CorpusDocument, tuple[RetrievalHit, ...], str]
+                ] = []
+                for index in pending:
+                    seed = self._candidate_seed(seeds[index], attempts[index])
+                    source_document = self._retriever.random_document(seed)
+                    seed_query = source_document.contents or (
+                        f"{source_document.title}\n{source_document.text}"
+                    )
+                    seed_hits = tuple(
+                        self._retriever.search(
+                            seed_query, topk=self._config.seed_context_topk
+                        )
+                    )
+                    if not seed_hits:
+                        raise ValueError(
+                            "could not retrieve seed context for long-context QA generation"
+                        )
+                    prompt = self._build_qa_generation_prompt(seed_hits)
+                    prepared.append((index, seed, source_document, seed_hits, prompt))
 
-        return [
-                LongContextQAInstance(
-                    seed=seed,
-                    source_document=source_document,
-                    seed_hits=seed_hits,
-                    question=question,
-                    gold_answer=gold_answer,
+                completions: list[tuple[str, int]] = []
+                chunk_size = max(1, self._config.qa_generation_batch_size)
+                for start in range(0, len(prepared), chunk_size):
+                    chunk = prepared[start : start + chunk_size]
+                    completions.extend(
+                        self._generate_original(
+                            [item[4] for item in chunk],
+                            max_new_tokens=self._config.qa_generation_max_new_tokens,
+                            greedy=True,
+                            progress_label=None,
+                        )
+                    )
+                if len(completions) != len(prepared):
+                    raise ValueError(
+                        "original model must return exactly one generated QA per seed"
+                    )
+
+                candidates: list[LongContextQAInstance] = []
+                candidate_indexes: list[int] = []
+                for (
+                    index,
+                    seed,
+                    source_document,
+                    seed_hits,
+                    prompt,
+                ), (completion, _tokens) in zip(prepared, completions):
+                    question, gold_answer = self._parse_generated_qa_with_retries(
+                        seed=seed,
+                        source_document=source_document,
+                        seed_hits=seed_hits,
+                        prompt=prompt,
+                        completion=completion,
+                    )
+                    candidates.append(
+                        LongContextQAInstance(
+                            seed=seed,
+                            source_document=source_document,
+                            seed_hits=seed_hits,
+                            question=question,
+                            gold_answer=gold_answer,
+                        )
+                    )
+                    candidate_indexes.append(index)
+
+                direct_hits = self._retriever.search_batch(
+                    [candidate.question for candidate in candidates],
+                    topk=filter_topk,
                 )
-            for seed, source_document, seed_hits, question, gold_answer in qa_pairs
-        ]
+                if len(direct_hits) != len(candidates):
+                    raise ValueError(
+                        "retriever must return one result list per generated question"
+                    )
+
+                next_pending: list[int] = []
+                for index, candidate, hits in zip(
+                    candidate_indexes, candidates, direct_hits
+                ):
+                    gold_ids = {hit.document.doc_id for hit in candidate.seed_hits}
+                    direct_ids = {hit.document.doc_id for hit in hits}
+                    if gold_ids.isdisjoint(direct_ids):
+                        accepted[index] = candidate
+                        progress.update(1)
+                    else:
+                        attempts[index] += 1
+                        next_pending.append(index)
+                pending = next_pending
+
+        if any(instance is None for instance in accepted):
+            raise RuntimeError("long-context question filtering left an unfilled slot")
+        return [instance for instance in accepted if instance is not None]
+
+    @staticmethod
+    def _candidate_seed(base_seed: str, attempt: int) -> str:
+        if attempt <= 0:
+            return base_seed
+        material = (
+            b"thinker-long-context-filter-v1\0"
+            + base_seed.encode("utf-8")
+            + b"\0"
+            + str(attempt).encode("ascii")
+        )
+        return hashlib.sha256(material).hexdigest()
 
     def _parse_generated_qa_with_retries(
         self,

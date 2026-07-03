@@ -158,6 +158,11 @@ documents. The validator compares that answer with the gold answer, using
 normalized exact match first and the same no-thinking original model as a
 semantic-equivalence judge only when exact match fails.
 
+Generated questions are accepted only when searching BM25 with the question
+verbatim returns none of the seed evidence documents in the top five. Rejected
+candidates are regenerated with deterministic derived seeds until every
+evaluation slot is filled.
+
 For baseline measurement, BM25 searches with the original question directly and
 the frozen base model answers from the top five documents without generating a
 search query or evidence selection. Baseline correctness is retained for

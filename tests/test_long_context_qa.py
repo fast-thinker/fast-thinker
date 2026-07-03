@@ -63,6 +63,52 @@ class _Inference:
         return self.generate_original_greedy_limited(prompts, **kwargs)
 
 
+class _GenerationInference(_Inference):
+    def __init__(self) -> None:
+        super().__init__()
+        self.generated_questions = 0
+
+    def generate_original_greedy_limited(self, prompts, **kwargs):
+        completions = []
+        for prompt in prompts:
+            if prompt.startswith("You are creating a difficult long-context QA challenge"):
+                self.generated_questions += 1
+                completions.append(
+                    (
+                        '{"question": "Generated question '
+                        f'{self.generated_questions}", "answer": "Ada Lovelace"}}',
+                        8,
+                    )
+                )
+            else:
+                completions.extend(super().generate_original_greedy_limited([prompt], **kwargs))
+        return completions
+
+
+class _FilteringRetriever(_Retriever):
+    def __init__(self, gold_hit: RetrievalHit, distractor_hit: RetrievalHit) -> None:
+        super().__init__([gold_hit])
+        self.gold_hit = gold_hit
+        self.distractor_hit = distractor_hit
+        self.random_seeds: list[str] = []
+
+    def random_document(self, seed: str) -> CorpusDocument:
+        self.random_seeds.append(seed)
+        return self.gold_hit.document
+
+    def search(self, _query: str, *, topk: int) -> list[RetrievalHit]:
+        return [self.gold_hit][:topk]
+
+    def search_batch(self, queries: list[str], *, topk: int) -> list[list[RetrievalHit]]:
+        self.batch_calls.append((queries, topk))
+        return [
+            [self.gold_hit]
+            if question == "Generated question 1"
+            else [self.distractor_hit]
+            for question in queries
+        ]
+
+
 class LongContextEvidenceSelectionTest(unittest.TestCase):
     def setUp(self) -> None:
         self.hits = [
@@ -197,6 +243,33 @@ class LongContextEvidenceSelectionTest(unittest.TestCase):
             correct_baseline_rewards,
             {"short": [1.5], "long": [1.0], "wrong": [-1.0]},
         )
+
+    def test_generation_fills_fifty_slots_after_top_five_rejection(self) -> None:
+        inference = _GenerationInference()
+        retriever = _FilteringRetriever(
+            self.hits[0],
+            _hit(99, "Distractor", "An unrelated document."),
+        )
+        evaluator = LongContextQAEvaluator(
+            retriever=retriever,
+            inference=inference,
+            config=LongContextQAConfig(
+                seed_context_topk=1,
+                baseline_context_topk=5,
+                qa_filter_max_attempts=3,
+            ),
+        )
+
+        seeds = [f"base-seed-{index}" for index in range(50)]
+        instances = evaluator.generate_instances(seeds)
+
+        self.assertEqual(len(instances), 50)
+        self.assertEqual(instances[0].question, "Generated question 51")
+        self.assertNotIn("Generated question 1", {item.question for item in instances})
+        self.assertEqual(inference.generated_questions, 51)
+        self.assertEqual([topk for _queries, topk in retriever.batch_calls], [5, 5])
+        self.assertEqual(retriever.random_seeds[0], "base-seed-0")
+        self.assertNotEqual(retriever.random_seeds[-1], "base-seed-0")
 
 
 if __name__ == "__main__":
