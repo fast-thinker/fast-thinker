@@ -132,11 +132,10 @@ The built-in exact math tracks and default procedural generators use expanded
 parameter ranges so generated instances have large prompt spaces rather than
 small enumerable tables. The procedural math track defaults only to
 `polynomial_equations`, `intermediate_integration`, and `advanced_geometry`.
-The elementary `gsm_symbolic` word-problem family is not supported. Short
-mechanical generators such as simple integration, polynomial multiplication,
-direct exponentiation, basic number sequences, arithmetic, factorization, and
-calendar arithmetic are excluded by default because they can still emit
-one-step questions even with wider numeric ranges. Set
+Short mechanical generators such as simple integration, polynomial
+multiplication, direct exponentiation, basic number sequences, arithmetic,
+factorization, and calendar arithmetic are excluded by default because they can
+still emit one-step questions even with wider numeric ranges. Set
 `THINKER_PROCEDURAL_GENERATORS` to a comma-separated generator list to override
 the default mix. When small opt-in Reasoning Gym generators such as GCD, LCM,
 prime factorization, base conversion, calendar arithmetic, or coordinate

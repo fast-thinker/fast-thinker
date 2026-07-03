@@ -156,9 +156,8 @@ Generated math includes exact-verification tracks and a procedural Reasoning Gym
 track. The built-in exact generators and default procedural generators use
 expanded variable ranges so each family has a large prompt space instead of a
 small enumerable table. The procedural track defaults only to polynomial
-equations, intermediate integration, and advanced geometry. The elementary
-`gsm_symbolic` word-problem family is not supported. Short mechanical generators
-such as simple integration, polynomial multiplication, arithmetic,
+equations, intermediate integration, and advanced geometry. Short mechanical
+generators such as simple integration, polynomial multiplication, arithmetic,
 factorization, base conversion, direct exponentiation, basic number sequences,
 and calendar arithmetic require an explicit generator-list override. Wider
 value ranges alone do not make those one-step families difficult. If they are
@@ -316,15 +315,19 @@ else:
 ```
 
 The defaults are `floor = 0.05` and `gamma = 0.5`. With `N_d` problems in group
-`d`, the group and overall scores are:
+`d`, each group score is:
 
 ```text
 group_score(d) = sum(w_i * problem_reward_i for i in d) / sum(w_i for i in d)
-overall_score  = sum(group scores) / number of populated groups
 ```
 
-Math uses `4` difficulty bands by default. Each populated band has equal weight
-in the overall score, regardless of how many questions it contains.
+Math uses `4` difficulty bands by default. Its task score is the mean of its
+populated band scores, so each band has equal influence regardless of how many
+questions it contains. Task scores are then combined with the default weights
+`0.50` for math, `0.30` for long-context QA, and `0.20` for multiple choice.
+Weights are renormalized across the task types present in a stage; consequently,
+the full evaluation combines math and long-context QA at `62.5%` and `37.5%`,
+while multiple choice is used by the qualification stage.
 
 This prevents a large number of easy questions from overwhelming performance on
 harder or less frequent tasks. A candidate must also have enough valid results in
@@ -390,6 +393,9 @@ benchmark mix evolves.
 | Full-evaluation long-context problems | 50 |
 | Qualification candidates advancing | 10 |
 | Math difficulty bands | 4 |
+| Math score weight | 50% |
+| Long-context QA score weight | 30% |
+| Multiple-choice score weight | 20% |
 
 ## 8. Conclusion
 
