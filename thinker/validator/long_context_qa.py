@@ -71,6 +71,7 @@ SEARCH_RE = re.compile(r"<search>(.*?)</search>", re.DOTALL | re.IGNORECASE)
 LOOSE_SEARCH_RE = re.compile(r"<search>(.*?)<search>", re.DOTALL | re.IGNORECASE)
 BOXED_START_RE = re.compile(r"\\boxed\s*\{")
 LOG_SNIPPET_CHARS = 500
+MAX_REVISED_QUESTION_WORDS = 24
 
 
 def _log_snippet(text: str | None) -> str:
@@ -277,6 +278,12 @@ def _parse_revised_question(text: str) -> str:
         raise ValueError("question revision must contain a non-empty question")
     if "\n" in question or len(question) > 2_000:
         raise ValueError("question revision must contain one bounded question only")
+    word_count = len(re.findall(r"\b[\w'-]+\b", question))
+    if word_count > MAX_REVISED_QUESTION_WORDS:
+        raise ValueError(
+            "question revision must be short "
+            f"({word_count}>{MAX_REVISED_QUESTION_WORDS} words)"
+        )
     return question
 
 
@@ -1671,6 +1678,9 @@ class LongContextQAEvaluator:
             "entities and compared to produce the answer.\n\n"
             "Do not make two independent one-hop questions joined together. Do not "
             "state the answer, document titles, or copy a distinctive answer sentence. "
+            "Keep the initial question compact: avoid exhaustive background, rare "
+            "proper nouns, exact dates, and long copied noun phrases unless they are "
+            "strictly needed for the answer. "
             "The answer must be concise, unambiguous, and directly supported by the two "
             "chosen documents. Before returning, verify each hop and the final answer "
             "against those documents. Set supporting_document_indices to exactly two "
@@ -1747,15 +1757,31 @@ class LongContextQAEvaluator:
             for index in instance.supporting_document_indices
         ]
         return (
-            "Rewrite only the question below to make verbatim BM25 retrieval difficult "
-            "while keeping exactly the same unambiguous answer. Do not state the answer, "
-            "supporting titles, or distinctive "
-            "phrases copied from the documents. Replace direct names and lexical clues "
-            "with indirect roles, dates, relationships, and multi-hop bridge clues. A "
-            "capable model must still be able to infer a better lexical search query. "
-            "Preserve the HotpotQA-style bridge or comparison structure: both supporting "
-            "documents must remain necessary, and the question must not split into two "
-            "independent subquestions.\n\n"
+            "Rewrite only the question below into a short, tricky HotpotQA-style "
+            "question while keeping exactly the same unambiguous answer.\n\n"
+            "Hard constraints:\n"
+            f"- Use at most {MAX_REVISED_QUESTION_WORDS} words, one sentence, ending in '?'.\n"
+            "- Preserve the bridge or comparison structure: both supporting documents "
+            "must remain necessary.\n"
+            "- Be oblique and slightly ambiguous on the surface, but answerable from "
+            "the documents.\n"
+            "- Replace direct names, titles, exact dates, rare terms, and copied "
+            "phrases with short role-based clues.\n"
+            "- Add exactly one harmless noise word or aside that does not change the "
+            "meaning, such as 'cerulean', 'after the stray aside', or 'with a foggy "
+            "decoy'. Do not make the noise a new factual requirement.\n"
+            "- Do not state the answer, supporting titles, distinctive phrases copied "
+            "from the documents, or a chain of background details.\n"
+            "- Do not split the question into two independent subquestions.\n\n"
+            "Style examples:\n"
+            "Bad: Based on the defense counsel's speculation, what specific digital "
+            "interaction logged on a social platform challenged the father's account "
+            "of his daughter's departure time?\n"
+            "Good: What logged social-site activity, with a foggy decoy, undercut the "
+            "father's timing claim?\n\n"
+            "Bad: Who is the father of the individual who served as the 11th President "
+            "of the United States and was noted for owning enslaved people?\n"
+            "Good: Who fathered that enslaver-president, after the cerulean aside?\n\n"
             f"Original question:\n{instance.question}\n\n"
             f"Preserved answer (do not output it):\n{instance.gold_answer}\n\n"
             f"Supporting titles (do not output them):\n{json.dumps(support_titles, ensure_ascii=False)}\n\n"

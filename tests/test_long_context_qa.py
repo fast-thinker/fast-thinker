@@ -11,6 +11,7 @@ from thinker.validator.long_context_qa import (
     LongContextQAEvaluator,
     LongContextQAInstance,
     parse_document_indices,
+    _parse_revised_question,
 )
 
 
@@ -236,6 +237,16 @@ class LongContextEvidenceSelectionTest(unittest.TestCase):
         self.assertIn("Doc 1 (Title: First)", formatted)
         self.assertIn("Doc 2 (Title: Seventh)", formatted)
         self.assertNotIn("Doc 7", formatted)
+
+    def test_revised_question_rejects_long_detail_heavy_question(self) -> None:
+        long_question = (
+            '{"question": "Based on multiple detailed background clues and rare '
+            "proper nouns copied from the documents, which person ultimately "
+            "satisfies the hidden relation after all that excessive context?\"}"
+        )
+
+        with self.assertRaises(ValueError):
+            _parse_revised_question(long_question)
 
     def test_baseline_directly_retrieves_top_five_and_answers(self) -> None:
         answer = self.evaluator.score_original_batch([self.instance])[0]
