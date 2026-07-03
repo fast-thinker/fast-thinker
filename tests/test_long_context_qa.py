@@ -72,13 +72,13 @@ class _GenerationInference(_Inference):
     def generate_original_greedy_limited(self, prompts, **kwargs):
         completions = []
         for prompt in prompts:
-            if prompt.startswith("You are creating a difficult long-context QA challenge"):
+            if prompt.startswith("Create one natural HotpotQA-style multi-hop question"):
                 self.generated_questions += 1
                 completions.append(
                     (
                         '{"question": "Generated question '
                         f'{self.generated_questions}", "answer": "Ada Lovelace", '
-                        '"supporting_document_indices": [1]}',
+                        '"supporting_document_indices": [1, 2]}',
                         8,
                     )
                 )
@@ -112,7 +112,7 @@ class _FilteringRetriever(_Retriever):
 
     def search(self, query: str, *, topk: int) -> list[RetrievalHit]:
         self.seed_queries.append(query)
-        return [self.gold_hit][:topk]
+        return [self.gold_hit, self.distractor_hit][:topk]
 
     def search_batch(self, queries: list[str], *, topk: int) -> list[list[RetrievalHit]]:
         self.batch_calls.append((queries, topk))
@@ -269,7 +269,7 @@ class LongContextEvidenceSelectionTest(unittest.TestCase):
             retriever=retriever,
             inference=inference,
             config=LongContextQAConfig(
-                seed_context_topk=1,
+                seed_context_topk=2,
                 baseline_context_topk=5,
                 qa_filter_max_attempts=3,
             ),
@@ -280,6 +280,7 @@ class LongContextEvidenceSelectionTest(unittest.TestCase):
 
         self.assertEqual(len(instances), 50)
         self.assertEqual(instances[0].question, "Revised hard question 1")
+        self.assertEqual(instances[0].supporting_document_indices, (1, 2))
         self.assertEqual(inference.generated_questions, 50)
         self.assertEqual(inference.revised_questions, 50)
         self.assertEqual(retriever.batch_calls, [])

@@ -158,12 +158,12 @@ documents. The validator compares that answer with the gold answer, using
 normalized exact match first and the same no-thinking original model as a
 semantic-equivalence judge only when exact match fails.
 
-The validator samples a source title and retrieves seed documents with that
-title. The generator identifies which documents support its answer, then a
-second generation pass rewrites every question for retrieval difficulty while
-preserving the answer and supporting-document indices. Valid rewrites are
-accepted directly; malformed generations use deterministic replacement seeds
-until every evaluation slot is filled.
+The validator samples a source title and retrieves passages with distinct
+Wikipedia titles. The generator creates a HotpotQA-style bridge or comparison
+question requiring exactly two supporting documents, then a second generation
+pass rewrites it for retrieval difficulty while preserving the answer and
+two-hop structure. Valid rewrites are accepted directly; malformed generations
+use deterministic replacement seeds until every evaluation slot is filled.
 
 For baseline measurement, BM25 searches with the original question directly and
 the frozen base model answers from the top five documents without generating a

@@ -249,6 +249,10 @@ def _parse_generated_qa_record(text: str) -> tuple[str, str, tuple[int, ...]]:
     indices = tuple(dict.fromkeys(raw_indices))
     if any(index <= 0 for index in indices):
         raise ValueError("supporting_document_indices must be positive and one-based")
+    if len(indices) != 2:
+        raise ValueError(
+            "HotpotQA-style generation requires exactly two supporting documents"
+        )
     return question, answer, indices
 
 
@@ -666,15 +670,27 @@ class LongContextQAEvaluator:
                         attempts[index] += 1
                         preparation_retry_indexes.append(index)
                         continue
-                    seed_hits = tuple(
-                        self._retriever.search(
-                            seed_query, topk=self._config.seed_context_topk
-                        )
+                    candidate_hits = self._retriever.search(
+                        seed_query,
+                        topk=max(50, int(self._config.seed_context_topk)),
                     )
-                    if not seed_hits:
-                        raise ValueError(
-                            "could not retrieve seed context for long-context QA generation"
-                        )
+                    distinct_hits: list[RetrievalHit] = []
+                    seen_titles: set[str] = set()
+                    for hit in candidate_hits:
+                        title_key = hit.document.title.strip().casefold()
+                        if not title_key or title_key in seen_titles:
+                            continue
+                        seen_titles.add(title_key)
+                        distinct_hits.append(hit)
+                        if len(distinct_hits) >= max(
+                            2, int(self._config.seed_context_topk)
+                        ):
+                            break
+                    if len(distinct_hits) < 2:
+                        attempts[index] += 1
+                        preparation_retry_indexes.append(index)
+                        continue
+                    seed_hits = tuple(distinct_hits)
                     prompt = self._build_qa_generation_prompt(seed_hits)
                     prepared.append((index, seed, source_document, seed_hits, prompt))
 
@@ -816,6 +832,14 @@ class LongContextQAEvaluator:
                     raise ValueError(
                         "supporting_document_indices exceed the provided documents"
                     )
+                support_titles = {
+                    seed_hits[index - 1].document.title.strip().casefold()
+                    for index in supporting_indices
+                }
+                if len(support_titles) != 2:
+                    raise ValueError(
+                        "supporting_document_indices must reference two distinct titles"
+                    )
                 return question, answer, supporting_indices
             except Exception as exc:
                 last_error = exc
@@ -841,21 +865,13 @@ class LongContextQAEvaluator:
                     break
                 current_completion = completions[0][0]
 
-        question, answer = self._fallback_generated_qa(source_document)
-        supporting_index = next(
-            (
-                index
-                for index, hit in enumerate(seed_hits, start=1)
-                if hit.document.doc_id == source_document.doc_id
-            ),
-            1,
-        )
+        question, answer = self._fallback_generated_qa(seed_hits)
         print(
             "[thinker-validator] long-context QA generation: using fallback QA "
             f"after parse failure ({type(last_error).__name__})",
             flush=True,
         )
-        return question, answer, (supporting_index,)
+        return question, answer, (1, 2)
 
     @staticmethod
     def _log_invalid_generated_qa(
@@ -871,19 +887,14 @@ class LongContextQAEvaluator:
         )
 
     @staticmethod
-    def _fallback_generated_qa(source_document: CorpusDocument) -> tuple[str, str]:
-        title = source_document.title.strip()
-        if title:
-            return (
-                "What is the title of the retrieved source document?",
-                title,
-            )
-
-        text = " ".join((source_document.text or source_document.contents).split())
-        first_sentence = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0].strip()
-        answer = first_sentence[:200].strip() or "unknown"
+    def _fallback_generated_qa(
+        seed_hits: tuple[RetrievalHit, ...],
+    ) -> tuple[str, str]:
+        first_title = seed_hits[0].document.title.strip()
+        second_title = seed_hits[1].document.title.strip()
+        answer = min((first_title, second_title), key=str.casefold)
         return (
-            "What is the first sentence of the retrieved source document?",
+            "Of the two documented subjects, which title comes first alphabetically?",
             answer,
         )
 
@@ -1649,29 +1660,29 @@ class LongContextQAEvaluator:
             max_chars_per_doc=self._config.qa_generation_max_chars_per_doc,
         )
         return (
-            "You are creating a difficult long-context QA challenge for a validator. "
-            "Use only the documents below as ground truth.\n\n"
-            "The question must be hard in two distinct ways:\n"
-            "1. Hard to answer: it must require specific evidence from the documents "
-            "and must not be answerable from broad common knowledge alone.\n"
-            "2. Hard to retrieve: do not reveal the answer or simply quote the answer "
-            "sentence. However, include enough grounded bridge clues that a capable "
-            "model can reformulate the question into one lexical search query that "
-            "retrieves the relevant document. Prefer references by role, relation, or "
-            "attribute and multi-hop reasoning over direct quotation.\n\n"
-            "The answer must still be concise and fully grounded in the documents. "
-            "Set supporting_document_indices to the smallest one-based set of Doc "
-            "indices that directly supports the answer. Before returning, verify that "
-            "those documents state enough evidence to make the answer unambiguously "
-            "correct.\n\n"
+            "Create one natural HotpotQA-style multi-hop question using only the "
+            "documents below as ground truth. Exactly two documents with different "
+            "titles must be necessary to answer it.\n\n"
+            "Choose one HotpotQA reasoning pattern:\n"
+            "- Bridge: Document A identifies an intermediate entity, and Document B "
+            "provides the fact needed for the final answer. The question must require "
+            "both hops and must not name the intermediate entity directly.\n"
+            "- Comparison: the same property must be extracted from two different "
+            "entities and compared to produce the answer.\n\n"
+            "Do not make two independent one-hop questions joined together. Do not "
+            "state the answer, document titles, or copy a distinctive answer sentence. "
+            "The answer must be concise, unambiguous, and directly supported by the two "
+            "chosen documents. Before returning, verify each hop and the final answer "
+            "against those documents. Set supporting_document_indices to exactly two "
+            "one-based Doc indices with different titles.\n\n"
             f"Documents:\n{context}\n\n"
             "Use this JSON format exactly. The content below is only an example; "
             "create a new question and answer from the documents above.\n\n"
             "```json\n"
             "{\n"
-            '  "question": "Who described the Analytical Engine algorithm?",\n'
-            '  "answer": "Ada Lovelace",\n'
-            '  "supporting_document_indices": [1]\n'
+            '  "question": "Which university was attended by the novelist whose book inspired the named film?",\n'
+            '  "answer": "Example University",\n'
+            '  "supporting_document_indices": [1, 3]\n'
             "}\n"
             "```\n\n"
             "Return exactly one JSON object and no explanation."
@@ -1698,7 +1709,7 @@ class LongContextQAEvaluator:
             "fence, no prose, and no extra keys:\n"
             '{"question": "A concise question grounded in the documents", '
             '"answer": "A concise answer", '
-            '"supporting_document_indices": [1]}\n\n'
+            '"supporting_document_indices": [1, 2]}\n\n'
             f"Documents, repeated for grounding:\n{context}"
         )
 
@@ -1720,7 +1731,10 @@ class LongContextQAEvaluator:
             "supporting titles, or distinctive "
             "phrases copied from the documents. Replace direct names and lexical clues "
             "with indirect roles, dates, relationships, and multi-hop bridge clues. A "
-            "capable model must still be able to infer a better lexical search query.\n\n"
+            "capable model must still be able to infer a better lexical search query. "
+            "Preserve the HotpotQA-style bridge or comparison structure: both supporting "
+            "documents must remain necessary, and the question must not split into two "
+            "independent subquestions.\n\n"
             f"Original question:\n{instance.question}\n\n"
             f"Preserved answer (do not output it):\n{instance.gold_answer}\n\n"
             f"Supporting titles (do not output them):\n{json.dumps(support_titles, ensure_ascii=False)}\n\n"
