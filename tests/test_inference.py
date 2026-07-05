@@ -57,6 +57,26 @@ class FlashInferEnvironmentTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "uv pip uninstall flashinfer-jit-cache"):
                 _validate_flashinfer_jit_cache()
 
+    def test_stale_jit_cache_error_includes_metadata_location(self) -> None:
+        class Distribution:
+            _path = "/venv/main/lib/python3.12/site-packages/flashinfer_jit_cache.dist-info"
+
+        with patch(
+            "thinker.validator.inference.importlib.metadata.version",
+            _metadata_versions(
+                {
+                    "flashinfer-python": "0.6.11.post2",
+                    "flashinfer-jit-cache": "0.6.8.post1+cu130",
+                }
+            ),
+        ):
+            with patch(
+                "thinker.validator.inference.importlib.metadata.distribution",
+                return_value=Distribution(),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Python sees its metadata"):
+                    _validate_flashinfer_jit_cache()
+
 
 if __name__ == "__main__":
     unittest.main()

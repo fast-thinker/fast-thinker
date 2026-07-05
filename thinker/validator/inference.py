@@ -22,6 +22,20 @@ def _public_version(version: str) -> str:
     return version.split("+", 1)[0]
 
 
+def _distribution_location(distribution: str) -> str | None:
+    try:
+        metadata = importlib.metadata.distribution(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+    path = getattr(metadata, "_path", None)
+    if path is not None:
+        return str(path)
+    try:
+        return str(metadata.locate_file(""))
+    except Exception:
+        return None
+
+
 def _validate_flashinfer_jit_cache() -> None:
     try:
         flashinfer_version = importlib.metadata.version("flashinfer-python")
@@ -33,12 +47,16 @@ def _validate_flashinfer_jit_cache() -> None:
         return
     if _public_version(jit_cache_version) == _public_version(flashinfer_version):
         return
+    location = _distribution_location("flashinfer-jit-cache")
+    location_hint = f" Python sees its metadata at {location}." if location else ""
     raise RuntimeError(
         "flashinfer-jit-cache is installed with version "
         f"{jit_cache_version}, but flashinfer-python is {flashinfer_version}. "
-        "This stale optional cache package prevents vLLM from starting. "
+        "This stale optional cache package prevents vLLM from starting."
+        f"{location_hint} "
         "Run `uv pip uninstall flashinfer-jit-cache` and then "
-        "`uv pip install -e '.[validator]'`."
+        "`uv pip install -e '.[validator]'`. If uv says it is not installed, "
+        "remove the reported metadata/cache path from the active Python environment."
     )
 
 
