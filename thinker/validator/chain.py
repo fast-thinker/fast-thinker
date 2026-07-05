@@ -130,7 +130,7 @@ class BittensorWeightSetter:
         wallet: Any,
         netuid: int,
         *,
-        burn_rate: float = 0.0,
+        burn_rate: float = 1.0,
     ):
         if not 0.0 <= burn_rate <= 1.0:
             raise ValueError("burn_rate must be between 0 and 1")

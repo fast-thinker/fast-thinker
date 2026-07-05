@@ -315,10 +315,10 @@ def _add_run_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argum
     parser.add_argument(
         "--burn-rate",
         type=_unit_interval_float,
-        default=0.0,
+        default=1.0,
         help=(
             "Fraction of on-chain weight assigned to burn UID 0; the remainder "
-            "is distributed among scored miners (default: 0.0)."
+            "is distributed among scored miners (default: 1.0)."
         ),
     )
     parser.add_argument(

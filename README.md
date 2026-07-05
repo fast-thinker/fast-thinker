@@ -96,7 +96,7 @@ thinker-validator run \
   --wallet validator-wallet \
   --hotkey validator-hotkey \
   --evaluation-delay-epochs 6 \
-  --burn-rate 0.9
+  --burn-rate 1
 ```
 
 Required runtime input: `WANDB_API_KEY`. Set `--wallet` and `--hotkey` only when
@@ -109,7 +109,8 @@ maturity delay for local testing. While submissions mature, the validator logs
 their remaining blocks and eligible epoch instead of reporting that no miner
 submissions exist.
 
-`--burn-rate` defaults to `0`. For example, `--burn-rate 0.9` assigns weight
+`--burn-rate` defaults to `1`, which assigns all weight to burn UID 0 unless
+you override it. For example, `--burn-rate 0.9` assigns weight
 `0.9` to burn UID 0 and distributes the remaining `0.1` among scored miners in
 proportion to their scores. The accepted range is `0` through `1`, inclusive.
 
