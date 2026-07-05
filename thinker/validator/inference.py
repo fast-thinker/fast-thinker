@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import hashlib
+import importlib.metadata
 import logging
 import re
 from contextlib import contextmanager
@@ -15,6 +16,30 @@ from thinker.validator.safe_adapter import materialize_validated_adapter
 
 logger = logging.getLogger(__name__)
 _PINNED_REVISION_RE = re.compile(r"[0-9a-fA-F]{40,64}")
+
+
+def _public_version(version: str) -> str:
+    return version.split("+", 1)[0]
+
+
+def _validate_flashinfer_jit_cache() -> None:
+    try:
+        flashinfer_version = importlib.metadata.version("flashinfer-python")
+    except importlib.metadata.PackageNotFoundError:
+        return
+    try:
+        jit_cache_version = importlib.metadata.version("flashinfer-jit-cache")
+    except importlib.metadata.PackageNotFoundError:
+        return
+    if _public_version(jit_cache_version) == _public_version(flashinfer_version):
+        return
+    raise RuntimeError(
+        "flashinfer-jit-cache is installed with version "
+        f"{jit_cache_version}, but flashinfer-python is {flashinfer_version}. "
+        "This stale optional cache package prevents vLLM from starting. "
+        "Run `uv pip uninstall flashinfer-jit-cache` and then "
+        "`uv pip install -e '.[validator]'`."
+    )
 
 
 def _chat_template_kwargs(enable_thinking: bool) -> dict[str, Any]:
@@ -109,6 +134,7 @@ class BaseModelServer:
         engine_kwargs["trust_remote_code"] = False
         engine_kwargs["load_format"] = "safetensors"
 
+        _validate_flashinfer_jit_cache()
         from vllm import LLM
 
         self._llm = LLM(
