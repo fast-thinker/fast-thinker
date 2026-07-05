@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
+import tempfile
 import threading
+import types
 import unittest
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from thinker.retrieval.bm25 import BM25RetrievalService, CorpusDocument
+from thinker.retrieval.bm25 import (
+    BM25RetrievalService,
+    CorpusDocument,
+    RetrievalDownloadResourceError,
+    download_prebuilt_bm25_index,
+)
 from thinker.retrieval.server import retrieve_payload, start_retrieval_service
 
 
@@ -64,6 +74,70 @@ class BM25BatchSearchTest(unittest.TestCase):
 
         self.assertEqual(len(payload["result"]), 2)
         self.assertEqual(len(service._retriever.calls), 1)
+
+
+class BM25DownloadTest(unittest.TestCase):
+    def test_prebuilt_download_sets_low_thread_hf_defaults(self) -> None:
+        calls: list[tuple[str, str, str]] = []
+
+        def fake_download(**kwargs):
+            calls.append(
+                (
+                    kwargs["filename"],
+                    os.environ["HF_HUB_DISABLE_XET"],
+                    os.environ["HF_XET_NUM_CONCURRENT_RANGE_GETS"],
+                )
+            )
+            return str(kwargs["local_dir"] / kwargs["filename"])
+
+        fake_hub = types.SimpleNamespace(hf_hub_download=fake_download)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {}, clear=True):
+                with patch.dict(sys.modules, {"huggingface_hub": fake_hub}):
+                    download_prebuilt_bm25_index(tmpdir)
+
+        self.assertEqual(calls[0], ("data.csc.index.npy", "1", "1"))
+        self.assertTrue(all(call[1:] == ("1", "1") for call in calls))
+        self.assertEqual(os.environ.get("HF_HUB_DISABLE_XET"), None)
+
+    def test_prebuilt_download_preserves_operator_hf_env(self) -> None:
+        seen: list[tuple[str, str, str]] = []
+
+        def fake_download(**kwargs):
+            seen.append(
+                (
+                    os.environ["HF_HUB_DISABLE_XET"],
+                    os.environ["HF_XET_NUM_CONCURRENT_RANGE_GETS"],
+                    os.environ["RAYON_NUM_THREADS"],
+                )
+            )
+            return str(kwargs["local_dir"] / kwargs["filename"])
+
+        fake_hub = types.SimpleNamespace(hf_hub_download=fake_download)
+        env = {
+            "HF_HUB_DISABLE_XET": "0",
+            "HF_XET_NUM_CONCURRENT_RANGE_GETS": "4",
+            "RAYON_NUM_THREADS": "8",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, env, clear=True):
+                with patch.dict(sys.modules, {"huggingface_hub": fake_hub}):
+                    download_prebuilt_bm25_index(tmpdir)
+
+        self.assertEqual(seen[0], ("0", "4", "8"))
+
+    def test_prebuilt_download_wraps_thread_resource_failures(self) -> None:
+        def fake_download(**kwargs):
+            raise RuntimeError("failed to spawn thread: Resource temporarily unavailable")
+
+        fake_hub = types.SimpleNamespace(hf_hub_download=fake_download)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(sys.modules, {"huggingface_hub": fake_hub}):
+                with self.assertRaisesRegex(
+                    RetrievalDownloadResourceError,
+                    "pids/thread limit",
+                ):
+                    download_prebuilt_bm25_index(tmpdir)
 
 
 class RetrievalServerLimitsTest(unittest.TestCase):

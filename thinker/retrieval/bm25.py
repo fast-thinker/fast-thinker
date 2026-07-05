@@ -50,6 +50,35 @@ class CorpusFormatError(ValueError):
     pass
 
 
+class RetrievalDownloadResourceError(RuntimeError):
+    pass
+
+
+def _configure_hf_download_environment() -> None:
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+    os.environ.setdefault("HF_XET_NUM_CONCURRENT_RANGE_GETS", "1")
+    os.environ.setdefault("RAYON_NUM_THREADS", "1")
+
+
+def _is_thread_resource_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return (
+        "failed to spawn thread" in text
+        or "resource temporarily unavailable" in text
+        or "wouldblock" in text
+    )
+
+
+def _raise_download_resource_error(filename: str, exc: BaseException) -> None:
+    raise RetrievalDownloadResourceError(
+        "Hugging Face download failed because this instance refused to create "
+        f"download worker threads while fetching {filename!r}. Increase the "
+        "container pids/thread limit, reduce other running processes, or run "
+        "with HF_HUB_DISABLE_XET=1, HF_XET_NUM_CONCURRENT_RANGE_GETS=1, and "
+        "RAYON_NUM_THREADS=1."
+    ) from exc
+
+
 def _split_contents(contents: str) -> tuple[str, str]:
     if "\n" not in contents:
         return contents.strip().strip('"'), ""
@@ -229,22 +258,47 @@ def download_s3_wiki18_corpus(
     repo_id: str | None = None,
 ) -> Path:
     repo_id = repo_id or S3_WIKI18_CORPUS_REPO
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return _hf_hub_download_dataset_file(
+        repo_id=repo_id,
+        filename=S3_WIKI18_CORPUS_FILE,
+        local_dir=cache_dir,
+        force_download=force_download,
+    )
+
+
+def _hf_hub_download_dataset_file(
+    *,
+    repo_id: str,
+    filename: str,
+    local_dir: Path,
+    revision: str | None = None,
+    force_download: bool = False,
+) -> Path:
+    _configure_hf_download_environment()
     try:
         from huggingface_hub import hf_hub_download
     except ImportError as exc:
-        raise ImportError("Install huggingface-hub to download the S3 corpus") from exc
+        raise ImportError("Install huggingface-hub to download retrieval assets") from exc
 
-    cache_dir = Path(cache_dir)
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    return Path(
-        hf_hub_download(
-            repo_id=repo_id,
-            filename=S3_WIKI18_CORPUS_FILE,
-            repo_type="dataset",
-            local_dir=cache_dir,
-            force_download=force_download,
+    try:
+        return Path(
+            hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                repo_type="dataset",
+                revision=revision,
+                local_dir=local_dir,
+                force_download=force_download,
+            )
         )
-    )
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException as exc:
+        if _is_thread_resource_error(exc):
+            _raise_download_resource_error(filename, exc)
+        raise
 
 
 def download_prebuilt_bm25_index(
@@ -253,18 +307,12 @@ def download_prebuilt_bm25_index(
     repo_id: str = BM25S_PREBUILT_INDEX_REPO,
     revision: str | None = None,
 ) -> Path:
-    try:
-        from huggingface_hub import hf_hub_download
-    except ImportError as exc:
-        raise ImportError("Install huggingface-hub to download the prebuilt bm25s index") from exc
-
     index_dir = Path(index_dir)
     index_dir.mkdir(parents=True, exist_ok=True)
     for filename in (*BM25S_INDEX_FILES, DOCUMENTS_FILE):
-        hf_hub_download(
+        _hf_hub_download_dataset_file(
             repo_id=repo_id,
             filename=filename,
-            repo_type="dataset",
             revision=revision,
             local_dir=index_dir,
         )
@@ -479,6 +527,7 @@ __all__ = [
     "DOCUMENTS_FILE",
     "INDEX_META_FILE",
     "RetrievalHit",
+    "RetrievalDownloadResourceError",
     "S3_WIKI18_CORPUS_FILE",
     "S3_WIKI18_CORPUS_REPO",
     "download_prebuilt_bm25_index",

@@ -14,6 +14,7 @@ from thinker.retrieval.bm25 import (
     BM25RetrievalService,
     BM25S_PREBUILT_INDEX_REPO,
     CorpusFormatError,
+    RetrievalDownloadResourceError,
     download_prebuilt_bm25_index,
     download_s3_wiki18_corpus,
 )
@@ -107,6 +108,10 @@ def prepare_retriever(config: ThinkerConfig, args: argparse.Namespace) -> BM25Re
         try:
             download_prebuilt_bm25_index(index_dir)
             _status("prebuilt BM25 index download complete")
+        except RetrievalDownloadResourceError as exc:
+            logger.error("retrieval asset download failed: %s", exc)
+            _status(str(exc))
+            raise
         except Exception as exc:
             logger.warning(
                 "could not download prebuilt bm25 index from %s (%s); "
