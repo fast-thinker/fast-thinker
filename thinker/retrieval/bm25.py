@@ -55,9 +55,8 @@ class RetrievalDownloadResourceError(RuntimeError):
 
 
 def _configure_hf_download_environment() -> None:
-    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
-    os.environ.setdefault("HF_XET_NUM_CONCURRENT_RANGE_GETS", "1")
-    os.environ.setdefault("RAYON_NUM_THREADS", "1")
+    os.environ.setdefault("HF_XET_NUM_CONCURRENT_RANGE_GETS", "2")
+    os.environ.setdefault("RAYON_NUM_THREADS", "2")
 
 
 def _is_thread_resource_error(exc: BaseException) -> bool:
@@ -74,8 +73,9 @@ def _raise_download_resource_error(filename: str, exc: BaseException) -> None:
         "Hugging Face download failed because this instance refused to create "
         f"download worker threads while fetching {filename!r}. Increase the "
         "container pids/thread limit, reduce other running processes, or run "
-        "with HF_HUB_DISABLE_XET=1, HF_XET_NUM_CONCURRENT_RANGE_GETS=1, and "
-        "RAYON_NUM_THREADS=1."
+        "with HF_XET_NUM_CONCURRENT_RANGE_GETS=1 and RAYON_NUM_THREADS=1. "
+        "If the instance still cannot run Hugging Face's Xet downloader, set "
+        "HF_HUB_DISABLE_XET=1 as a slower fallback."
     ) from exc
 
 

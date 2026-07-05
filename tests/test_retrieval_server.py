@@ -77,15 +77,15 @@ class BM25BatchSearchTest(unittest.TestCase):
 
 
 class BM25DownloadTest(unittest.TestCase):
-    def test_prebuilt_download_sets_low_thread_hf_defaults(self) -> None:
+    def test_prebuilt_download_sets_bounded_thread_hf_defaults(self) -> None:
         calls: list[tuple[str, str, str]] = []
 
         def fake_download(**kwargs):
             calls.append(
                 (
                     kwargs["filename"],
-                    os.environ["HF_HUB_DISABLE_XET"],
                     os.environ["HF_XET_NUM_CONCURRENT_RANGE_GETS"],
+                    os.environ["RAYON_NUM_THREADS"],
                 )
             )
             return str(kwargs["local_dir"] / kwargs["filename"])
@@ -96,8 +96,8 @@ class BM25DownloadTest(unittest.TestCase):
                 with patch.dict(sys.modules, {"huggingface_hub": fake_hub}):
                     download_prebuilt_bm25_index(tmpdir)
 
-        self.assertEqual(calls[0], ("data.csc.index.npy", "1", "1"))
-        self.assertTrue(all(call[1:] == ("1", "1") for call in calls))
+        self.assertEqual(calls[0], ("data.csc.index.npy", "2", "2"))
+        self.assertTrue(all(call[1:] == ("2", "2") for call in calls))
         self.assertEqual(os.environ.get("HF_HUB_DISABLE_XET"), None)
 
     def test_prebuilt_download_preserves_operator_hf_env(self) -> None:
