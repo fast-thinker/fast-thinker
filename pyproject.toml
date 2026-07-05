@@ -38,11 +38,10 @@ validator = [
     "transformers[serving] @ git+https://github.com/huggingface/transformers.git@main",
     "torchvision",
     "pillow",
-    # Keep vLLM and all FlashInfer packages in lockstep; mixed versions fail at startup.
+    # Keep vLLM and FlashInfer in lockstep; mixed versions fail at startup.
     "vllm==0.22.1",
-    "flashinfer-python==0.6.11.post2",
+    "flashinfer-python[cu13]==0.6.11.post2",
     "flashinfer-cubin==0.6.11.post2",
-    "flashinfer-jit-cache==0.6.11.post2",
     "bittensor==10.4.1",
     "bittensor-cli==9.22.3",
     "bittensor-wallet==4.1.0",
