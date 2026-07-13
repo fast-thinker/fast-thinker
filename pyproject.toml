@@ -15,7 +15,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "math-verify>=0.5.0",
+    "math-verify==0.5.0",
     "cryptography>=42.0.0",
     "torch>=2.2.0",
     "safetensors>=0.4.0",
@@ -31,10 +31,10 @@ dev = [
     "ruff>=0.6.0",
 ]
 procedural = [
-    "reasoning-gym>=0.1.0",
+    "reasoning-gym==0.1.0",
 ]
 validator = [
-    "reasoning-gym>=0.1.0",
+    "reasoning-gym==0.1.0",
     "transformers[serving] @ git+https://github.com/huggingface/transformers.git@main",
     "torchvision",
     "pillow",

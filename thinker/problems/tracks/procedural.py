@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import logging
+import multiprocessing as mp
 import os
+import queue
 
 import reasoning_gym as rg
 
@@ -10,6 +13,7 @@ from thinker.problems.interface import (
     extract_final_boxed_answer,
     register_track,
 )
+from thinker.reward.verify import _apply_worker_limits
 
 ALL_GENERATOR_NAMES: tuple[str, ...] = (
     "gcd",
@@ -122,6 +126,8 @@ GENERATOR_CONFIGS: dict[str, dict[str, object]] = {
 }
 
 _EXACT_MATCH = 1.0
+_VERIFY_TIMEOUT_S = 5.0
+logger = logging.getLogger(__name__)
 
 
 def _generator_names_from_env() -> tuple[str, ...]:
@@ -152,6 +158,69 @@ def _generator_config(name: str, seed_value: int) -> dict[str, object]:
     return config
 
 
+def _score_answer_worker(
+    seed: str,
+    generator_names: tuple[str, ...],
+    answer: str,
+    response_queue: mp.Queue,
+) -> None:
+    _apply_worker_limits()
+    try:
+        seed_value = _int_seed(seed)
+        name = generator_names[seed_value % len(generator_names)]
+        config = _generator_config(name, seed_value)
+        ds = rg.create_dataset(name, size=1, seed=seed_value, **config)
+        response_queue.put(("ok", ds.score_answer(answer=answer, entry=ds[0])))
+    except Exception as exc:
+        response_queue.put(("error", f"{type(exc).__name__}: {exc}"))
+
+
+def _score_answer_with_timeout(
+    seed: str,
+    generator_names: tuple[str, ...],
+    answer: str,
+    *,
+    timeout: float = _VERIFY_TIMEOUT_S,
+) -> float | None:
+    context = mp.get_context("spawn")
+    response_queue = context.Queue(maxsize=1)
+    process = context.Process(
+        target=_score_answer_worker,
+        args=(seed, generator_names, answer, response_queue),
+    )
+    process.start()
+    process.join(timeout)
+    if process.is_alive():
+        process.terminate()
+        process.join(1.0)
+        if process.is_alive():
+            process.kill()
+            process.join()
+        response_queue.close()
+        response_queue.join_thread()
+        logger.warning(
+            "reasoning-gym scorer exceeded %ss timeout; treating as unverified",
+            timeout,
+        )
+        return None
+
+    try:
+        status, payload = response_queue.get_nowait()
+    except queue.Empty:
+        logger.warning(
+            "reasoning-gym scorer exited without a result; treating as unverified"
+        )
+        return None
+    finally:
+        response_queue.close()
+        response_queue.join_thread()
+
+    if status != "ok":
+        logger.debug("reasoning-gym scorer failed: %s", payload)
+        return None
+    return float(payload)
+
+
 class ProceduralTrack:
     track = "procedural"
 
@@ -179,11 +248,7 @@ class ProceduralTrack:
         answer = extract_final_boxed_answer(output)
         if answer is None:
             return False
-        _, ds, item = self._dataset_and_item(seed)
-        try:
-            score = ds.score_answer(answer=answer, entry=item)
-        except Exception:
-            return False
+        score = _score_answer_with_timeout(seed, self._generator_names, answer)
         return score == _EXACT_MATCH
 
     def difficulty(self, seed: str) -> Difficulty:
