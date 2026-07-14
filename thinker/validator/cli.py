@@ -424,6 +424,14 @@ def _run_mode_tags(args: argparse.Namespace, test_mode: str | None) -> tuple[str
     return tuple(tags)
 
 
+def _accepted_result_count(results) -> int:
+    return sum(
+        1
+        for result in results.values()
+        if getattr(result, "score", None) is not None
+    )
+
+
 def _serve_until_signalled(on_stop) -> None:
     try:
         while True:
@@ -477,6 +485,7 @@ def _ensure_enc_pubkey_published(
     from thinker.submission.commitments import (
         commit_validator_keys,
         read_enc_pubkey,
+        read_owner_common_seed,
         read_validator_key_grant,
     )
     from thinker.submission.crypto import (
@@ -491,8 +500,6 @@ def _ensure_enc_pubkey_published(
             "THINKER_OWNER_HOTKEY must be set before validators can share their "
             "encrypted X25519 key grant"
         )
-    if owner_hotkey == hotkey:
-        raise RuntimeError("owner and validator must use separate hotkeys")
     metagraph_fn = getattr(subtensor, "metagraph", None)
     if callable(metagraph_fn):
         metagraph = metagraph_fn(netuid)
@@ -508,6 +515,25 @@ def _ensure_enc_pubkey_published(
                 f"validator hotkey {hotkey} has no validator permit on netuid {netuid}; "
                 "miners intentionally ignore encryption keys from non-validator hotkeys"
             )
+
+    if owner_hotkey == hotkey:
+        owner_common_seed = read_owner_common_seed(subtensor, netuid, owner_hotkey)
+        if owner_common_seed is None:
+            raise RuntimeError(
+                f"owner/validator hotkey {hotkey} must publish its owner common-seed "
+                "commitment before it can run as a validator"
+            )
+        if owner_common_seed.pubkey_hex != pubkey.hex():
+            raise RuntimeError(
+                "local validator encryption key does not match the owner public key "
+                f"published for hotkey={hotkey}, netuid={netuid}; use the owner "
+                "encryption keypair for this validator"
+            )
+        _status(
+            f"owner/validator public key confirmed on chain: hotkey={hotkey}, "
+            f"netuid={netuid}"
+        )
+        return
 
     owner_commitment = read_enc_pubkey(subtensor, netuid, owner_hotkey)
     if owner_commitment is None:
@@ -1208,6 +1234,18 @@ def _run_validator_epochs(
                 common_seed=common_seed,
                 test_mode=args.test_mode,
             )
+            if _accepted_result_count(results) == 0:
+                for miner_id, result in results.items():
+                    print(
+                        f"  {miner_id}: rejected ({result.rejected_reason})",
+                        flush=True,
+                    )
+                _status(
+                    f"epoch {epoch}: no accepted miner submissions after checks; "
+                    f"retrying discovery in {_EMPTY_ROUND_RETRY_SECONDS}s"
+                )
+                time.sleep(_EMPTY_ROUND_RETRY_SECONDS)
+                continue
             if wandb_logger is not None:
                 try:
                     wandb_logger.log_epoch(epoch, results)
