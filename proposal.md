@@ -149,26 +149,12 @@ difficult qualification batch does not immediately remove a strong model.
 
 Full evaluation uses a broader reasoning workload. The current defaults are:
 
-- 20 generated math problems; and
-- 50 retrieval-backed long-context question-answering problems.
+- 50 generated math problems; and
+- 0 retrieval-backed long-context question-answering problems.
 
-Generated math includes exact-verification tracks and a procedural Reasoning Gym
-track. The built-in exact generators and default procedural generators use
-expanded variable ranges so each family has a large prompt space instead of a
-small enumerable table. The procedural track defaults only to polynomial
-equations, intermediate integration, and advanced geometry. Short mechanical
-generators such as simple integration, polynomial multiplication, arithmetic,
-factorization, base conversion, direct exponentiation, basic number sequences,
-and calendar arithmetic require an explicit generator-list override. Wider
-value ranges alone do not make those one-step families difficult. If they are
-enabled, the validator still supplies wider ranges than the package defaults so
-they do not collapse into tiny lookup tables.
-
-The remaining procedural generators have minimum structural complexity.
-Polynomial equations are cubic or higher with at least four terms;
-intermediate integration uses only polynomial-times-exponential/trigonometric,
-cyclic, and repeated integration-by-parts forms; and advanced geometry uses
-orthocenter and incircle-radius tasks rather than direct angle calculation.
+Generated math uses self-contained exact-verification tracks with expanded
+variable ranges so each family has a large prompt space instead of a small
+enumerable table.
 
 The constructive track excludes Egyptian-fraction and GCD/LCM construction
 templates because fixed one-step witnesses solve every instance. It retains
@@ -176,9 +162,9 @@ modular inverse, linear Diophantine, CRT, Pythagorean, and quadratic-residue
 families.
 
 All math tracks require one final `\boxed{...}` answer with no trailing text.
-Only the boxed payload reaches the track-specific semantic verifier, preserving
-symbolic equivalence and alternate constructive witnesses while enforcing one
-consistent output contract.
+Only the boxed payload reaches the track-specific verifier. Synthesized math
+uses strict string matching, while built-in tracks keep their own exact
+checkers under the same output contract.
 
 Long-context problems are open-answer tasks for the validator, but candidates
 do not answer them directly. A candidate must search once, receives indexed
@@ -215,7 +201,7 @@ Each evaluation combines two types of problems:
 - **Evaluator-specific problems** are generated from local randomness. They
   make the full test set less predictable and harder to overfit.
 
-By default, half of an eligible batch is shared and half is evaluator-specific.
+By default, 80% of an eligible batch is shared and 20% is evaluator-specific.
 If shared evaluation data is temporarily unavailable, evaluators continue with
 their local problem generation rather than stopping the round.
 
@@ -326,8 +312,9 @@ populated band scores, so each band has equal influence regardless of how many
 questions it contains. Task scores are then combined with the default weights
 `0.50` for math, `0.30` for long-context QA, and `0.20` for multiple choice.
 Weights are renormalized across the task types present in a stage; consequently,
-the full evaluation combines math and long-context QA at `62.5%` and `37.5%`,
-while multiple choice is used by the qualification stage.
+the default full evaluation uses math only, while multiple choice is used by the
+qualification stage. If long-context QA is enabled, it is included using the
+renormalized task weights for the active full-evaluation tasks.
 
 This prevents a large number of easy questions from overwhelming performance on
 harder or less frequent tasks. A candidate must also have enough valid results in
@@ -363,8 +350,8 @@ confidence = min(1, qualification_problem_count / full_problem_count)
 displayed_score = qualification_rank * confidence
 ```
 
-Under the default `25` qualification and `70` full-evaluation problems,
-`confidence = 25 / 70 = 0.3571`.
+Under the default `25` qualification and `50` full-evaluation problems,
+`confidence = 25 / 50 = 0.5`.
 
 This reduces large ranking swings caused by one unusually easy or difficult
 batch without allowing old performance to dominate new evidence.
@@ -375,8 +362,7 @@ Thinker uses the final score to produce a clear selection signal. Among valid
 full-evaluation candidates, the model with the highest final score becomes the
 round champion. Other scored candidates remain visible as evaluation results,
 but the strongest efficient reasoner receives the reward signal for that round.
-Ties are resolved consistently so evaluators can reproduce their own decision
-process.
+Tie handling is deterministic and based on the recorded scores.
 
 ## 7. Current Evaluation Defaults
 
@@ -386,11 +372,11 @@ benchmark mix evolves.
 | Setting | Default |
 | --- | ---: |
 | Candidate maturity | 6 epochs |
-| Shared portion of an eligible batch | 50% |
+| Shared portion of an eligible batch | 80% |
 | Qualification multiple-choice problems | 25 |
-| Qualification problems with thinking | 5 |
-| Full-evaluation math problems | 20 |
-| Full-evaluation long-context problems | 50 |
+| Qualification problems with thinking | 25 |
+| Full-evaluation math problems | 50 |
+| Full-evaluation long-context problems | 0 |
 | Qualification candidates advancing | 10 |
 | Math difficulty bands | 4 |
 | Math score weight | 50% |

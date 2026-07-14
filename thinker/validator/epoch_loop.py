@@ -2526,15 +2526,11 @@ class EpochLoop:
         epoch: int,
         common_seed: str | None,
     ) -> dict[str, MinerEpochResult]:
-        thinking_count = min(
-            max(0, self._config.qualification_multiple_choice_thinking_per_epoch),
-            max(0, n_samples),
-        )
-        no_thinking_count = max(0, n_samples - thinking_count)
+        thinking_count = max(0, n_samples)
         self._log(
             "test mode science: scoring baseline "
             f"({n_samples} multiple-choice sample(s), "
-            f"{thinking_count} thinking, {no_thinking_count} no-thinking)"
+            f"{thinking_count} thinking, 0 no-thinking)"
         )
         batch = self.build_multiple_choice_batch(
             n_samples,
@@ -2717,13 +2713,7 @@ class EpochLoop:
         multiple_choice = max(
             0, self._config.qualification_multiple_choice_per_epoch
         )
-        multiple_choice_thinking = min(
-            multiple_choice,
-            max(
-                0,
-                self._config.qualification_multiple_choice_thinking_per_epoch,
-            ),
-        )
+        multiple_choice_thinking = multiple_choice
         return math, long_context, multiple_choice, multiple_choice_thinking
 
     def _build_qualification_baselines(
@@ -3074,9 +3064,6 @@ class EpochLoop:
             multiple_choice_count,
             multiple_choice_thinking_count,
         ) = self._qualification_counts(full_math, full_long_context)
-        multiple_choice_no_thinking = (
-            multiple_choice_count - multiple_choice_thinking_count
-        )
         qualification_items = (
             math_count + long_context_count + multiple_choice_count
         )
@@ -3084,8 +3071,7 @@ class EpochLoop:
             f"[thinker-validator] qualification: {math_count} math sample(s), "
             f"{long_context_count} long-context QA sample(s), "
             f"{multiple_choice_count} multiple-choice sample(s) "
-            f"({multiple_choice_thinking_count} thinking, "
-            f"{multiple_choice_no_thinking} no-thinking) for "
+            f"({multiple_choice_thinking_count} full-thinking) for "
             f"{len(prepared)} miner(s)",
             flush=True,
         )

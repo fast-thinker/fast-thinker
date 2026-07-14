@@ -83,7 +83,7 @@ non-interactive submissions, provide the choice with `--validator-uids`.
 
 ## Validator Run
 
-Set the required W&B key:
+Set the W&B key when logging is enabled:
 
 ```bash
 export WANDB_API_KEY=wandb_api_key
@@ -99,10 +99,22 @@ thinker-validator run \
   --burn-rate 1
 ```
 
-Required runtime input: `WANDB_API_KEY`. Set `--wallet` and `--hotkey` only when
-you are not using the local defaults. Subnet constants such as network, netuid,
-owner hotkey, shared W&B project, model revision, and retrieval defaults are
-configured in code.
+For a dry operational run without chain writes or W&B logging:
+
+```bash
+thinker-validator run \
+  --wallet validator-wallet \
+  --hotkey validator-hotkey \
+  --evaluation-delay-epochs 6 \
+  --burn-rate 1 \
+  --no-set-weights \
+  --no-wandb
+```
+
+Required runtime input: `WANDB_API_KEY`, unless `--no-wandb` is set. Set
+`--wallet` and `--hotkey` only when you are not using the local defaults.
+Subnet constants such as network, netuid, owner hotkey, shared W&B project,
+model revision, and retrieval defaults are configured in code.
 
 `--evaluation-delay-epochs` defaults to `6`. Set it to `0` to disable the
 maturity delay for local testing. While submissions mature, the validator logs
@@ -113,6 +125,9 @@ submissions exist.
 you override it. For example, `--burn-rate 0.9` assigns weight
 `0.9` to burn UID 0 and distributes the remaining `0.1` among scored miners in
 proportion to their scores. The accepted range is `0` through `1`, inclusive.
+
+Long-context QA is disabled by default. Enable it with
+`--long-context-qa-per-epoch N` or `THINKER_N_LONG_CONTEXT_QA_PER_EPOCH=N`.
 
 Evaluation scores are averaged within each task type before the task types are
 combined. Within a task group, each problem is weighted by peer correctness so
@@ -129,35 +144,18 @@ shuffles each row's option texts and replaces the original option labels with a
 seeded set of single-letter labels. It remaps the gold answer after this
 transformation, reducing direct memorization of public dataset answer letters.
 
-The built-in exact math tracks and default procedural generators use expanded
-parameter ranges so generated instances have large prompt spaces rather than
-small enumerable tables. The procedural math track defaults only to
-`polynomial_equations`, `intermediate_integration`, and `advanced_geometry`.
-Short mechanical generators such as simple integration, polynomial
-multiplication, direct exponentiation, basic number sequences, arithmetic,
-factorization, and calendar arithmetic are excluded by default because they can
-still emit one-step questions even with wider numeric ranges. Set
-`THINKER_PROCEDURAL_GENERATORS` to a comma-separated generator list to override
-the default mix. When small opt-in Reasoning Gym generators such as GCD, LCM,
-prime factorization, base conversion, calendar arithmetic, or coordinate
-geometry are enabled, the validator passes wider ranges than Reasoning Gym's
-package defaults.
+The built-in math tracks are self-contained and use deterministic local
+generators with large prompt spaces rather than small enumerable tables.
 
-The enabled procedural families are also constrained internally: polynomial
-equations use degree 3-5 with at least four terms, intermediate integration is
-limited to polynomial-times-exponential/trigonometric, cyclic, and repeated
-integration-by-parts forms, and advanced geometry is limited to orthocenter and
-incircle-radius problems.
-
-The constructive track similarly excludes its Egyptian-fraction and GCD/LCM
+The constructive track excludes its Egyptian-fraction and GCD/LCM
 construction templates because each admits a fixed one-step witness. Its active
 families are modular inverse, linear Diophantine equations, CRT, Pythagorean
 construction, and quadratic residues.
 
 Every math response must end with exactly one `\boxed{...}` answer and no text
 after it. The validator extracts that payload before applying the track's
-semantic verifier; procedural problems therefore retain Reasoning Gym's
-answer-aware scoring without allowing an unboxed value elsewhere in a response.
+exact or track-specific verifier; synthesized math uses strict string matching
+without allowing an unboxed value elsewhere in a response.
 
 ## Validator Chat
 

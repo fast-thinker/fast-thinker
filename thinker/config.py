@@ -70,18 +70,13 @@ class ThinkerConfig:
         "in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj",
     )
 
-    n_problems_per_epoch: int = field(default_factory=lambda: _env_int("THINKER_N_PROBLEMS_PER_EPOCH", 20))
-    n_long_context_qa_per_epoch: int = field(default_factory=lambda: _env_int("THINKER_N_LONG_CONTEXT_QA_PER_EPOCH", 50))
+    n_problems_per_epoch: int = field(default_factory=lambda: _env_int("THINKER_N_PROBLEMS_PER_EPOCH", 50))
+    n_long_context_qa_per_epoch: int = field(default_factory=lambda: _env_int("THINKER_N_LONG_CONTEXT_QA_PER_EPOCH", 0))
     qualification_math_per_epoch: int = field(default_factory=lambda: _env_int("THINKER_QUALIFICATION_MATH_PER_EPOCH", 0))
     qualification_long_context_qa_per_epoch: int = field(default_factory=lambda: _env_int("THINKER_QUALIFICATION_LONG_CONTEXT_QA_PER_EPOCH", 0))
     qualification_multiple_choice_per_epoch: int = field(
         default_factory=lambda: _env_int(
             "THINKER_QUALIFICATION_MULTIPLE_CHOICE_PER_EPOCH", 25
-        )
-    )
-    qualification_multiple_choice_thinking_per_epoch: int = field(
-        default_factory=lambda: _env_int(
-            "THINKER_QUALIFICATION_MULTIPLE_CHOICE_THINKING_PER_EPOCH", 5
         )
     )
     multiple_choice_dataset: str = field(
