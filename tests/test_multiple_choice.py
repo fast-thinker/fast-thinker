@@ -41,6 +41,18 @@ class MultipleChoiceOptionShuffleTests(unittest.TestCase):
         )
         self.assertEqual(option_by_label[instance.ground_truth], "Venus")
         self.assertEqual(instance.problem_id, "planet")
+        self.assertTrue(instance.enable_thinking)
+
+    def test_instances_default_to_full_thinking(self):
+        rows = [
+            {**self.row, "problem_id": f"planet-{index}"}
+            for index in range(3)
+        ]
+        evaluator = MultipleChoiceEvaluator(inference=None, rows=rows)
+        instances = evaluator.generate_instances(["seed-a", "seed-b", "seed-c"])
+
+        self.assertEqual(len(instances), 3)
+        self.assertTrue(all(instance.enable_thinking for instance in instances))
 
     def test_multiline_option_text_is_preserved(self):
         prompt = "Pick the true statement.\nA: First line\ncontinued\nB: Other"

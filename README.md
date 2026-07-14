@@ -129,35 +129,18 @@ shuffles each row's option texts and replaces the original option labels with a
 seeded set of single-letter labels. It remaps the gold answer after this
 transformation, reducing direct memorization of public dataset answer letters.
 
-The built-in exact math tracks and default procedural generators use expanded
-parameter ranges so generated instances have large prompt spaces rather than
-small enumerable tables. The procedural math track defaults only to
-`polynomial_equations`, `intermediate_integration`, and `advanced_geometry`.
-Short mechanical generators such as simple integration, polynomial
-multiplication, direct exponentiation, basic number sequences, arithmetic,
-factorization, and calendar arithmetic are excluded by default because they can
-still emit one-step questions even with wider numeric ranges. Set
-`THINKER_PROCEDURAL_GENERATORS` to a comma-separated generator list to override
-the default mix. When small opt-in Reasoning Gym generators such as GCD, LCM,
-prime factorization, base conversion, calendar arithmetic, or coordinate
-geometry are enabled, the validator passes wider ranges than Reasoning Gym's
-package defaults.
+The built-in math tracks are self-contained and use deterministic local
+generators with large prompt spaces rather than small enumerable tables.
 
-The enabled procedural families are also constrained internally: polynomial
-equations use degree 3-5 with at least four terms, intermediate integration is
-limited to polynomial-times-exponential/trigonometric, cyclic, and repeated
-integration-by-parts forms, and advanced geometry is limited to orthocenter and
-incircle-radius problems.
-
-The constructive track similarly excludes its Egyptian-fraction and GCD/LCM
+The constructive track excludes its Egyptian-fraction and GCD/LCM
 construction templates because each admits a fixed one-step witness. Its active
 families are modular inverse, linear Diophantine equations, CRT, Pythagorean
 construction, and quadratic residues.
 
 Every math response must end with exactly one `\boxed{...}` answer and no text
 after it. The validator extracts that payload before applying the track's
-semantic verifier; procedural problems therefore retain Reasoning Gym's
-answer-aware scoring without allowing an unboxed value elsewhere in a response.
+exact or track-specific verifier; synthesized math uses strict string matching
+without allowing an unboxed value elsewhere in a response.
 
 ## Validator Chat
 

@@ -15,7 +15,7 @@ from thinker.submission.crypto import (
     submission_to_json,
 )
 
-COMMON_SAMPLE_DIVISOR = 2
+COMMON_SAMPLE_RATE = 0.8
 COMMON_SEED_PATH_PREFIX = "common-seeds"
 _COMMON_SEED_VERSION = 1
 _MAX_COMMON_SEED_FILE_BYTES = 512 * 1024
@@ -233,7 +233,7 @@ def build_sample_seed_plan(
     common_count = 0
     if common_seed is not None:
         _validate_seed(common_seed)
-        common_count = count // COMMON_SAMPLE_DIVISOR
+        common_count = int(count * COMMON_SAMPLE_RATE)
     common = tuple(
         _derived_seed(common_seed, epoch=epoch, namespace=namespace, index=index)
         for index in range(common_count)
@@ -246,7 +246,7 @@ def build_sample_seed_plan(
 
 
 __all__ = [
-    "COMMON_SAMPLE_DIVISOR",
+    "COMMON_SAMPLE_RATE",
     "COMMON_SEED_PATH_PREFIX",
     "CommonSeedError",
     "CommonSeedRecord",

@@ -1432,21 +1432,12 @@ def _run_validator_loop(args: argparse.Namespace) -> int:
                 f"test mode {test_mode}: task-only full evaluation; "
                 "qualification, W&B, chain weights, cache, and round-state updates are skipped"
             )
-        qualification_thinking = min(
-            max(0, config.qualification_multiple_choice_thinking_per_epoch),
-            max(0, config.qualification_multiple_choice_per_epoch),
-        )
-        qualification_no_thinking = max(
-            0,
-            config.qualification_multiple_choice_per_epoch - qualification_thinking,
-        )
         _status(
             "staged evaluation: "
             f"qualification={config.qualification_math_per_epoch} math/"
             f"{config.qualification_long_context_qa_per_epoch} long-context QA/"
             f"{config.qualification_multiple_choice_per_epoch} multiple-choice, "
-            f"qualification thinking split="
-            f"{qualification_thinking}/{qualification_no_thinking}, "
+            "qualification thinking=full, "
             f"qualification dataset={config.multiple_choice_dataset}@{config.multiple_choice_split}, "
             f"qualification max_new_tokens={config.multiple_choice_max_new_tokens}, "
             f"full top-k={config.full_eval_top_k}, "
