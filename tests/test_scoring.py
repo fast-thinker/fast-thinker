@@ -126,33 +126,24 @@ class StrictMatchingTests(unittest.TestCase):
 
 
 class EvaluationDefaultsTest(unittest.TestCase):
-    def test_full_evaluation_defaults_are_thirty_math_twenty_long_qa(self) -> None:
+    def test_full_evaluation_defaults_are_fifty_math_no_long_qa(self) -> None:
         with mock.patch.dict(os.environ, {"USERPROFILE": "C:\\Users\\test"}, clear=True):
             config = ThinkerConfig()
 
-        self.assertEqual(config.n_problems_per_epoch, 30)
-        self.assertEqual(config.n_long_context_qa_per_epoch, 20)
+        self.assertEqual(config.n_problems_per_epoch, 50)
+        self.assertEqual(config.n_long_context_qa_per_epoch, 0)
 
     def test_common_seed_rate_uses_eighty_percent_of_batch(self) -> None:
         self.assertEqual(COMMON_SAMPLE_RATE, 0.8)
 
         math_plan = build_sample_seed_plan(
-            30,
+            50,
             private_seed="private",
             epoch=7,
             namespace="full_evaluation:math",
             common_seed="0" * 64,
         )
-        long_qa_plan = build_sample_seed_plan(
-            20,
-            private_seed="private",
-            epoch=7,
-            namespace="full_evaluation:long_context_qa",
-            common_seed="0" * 64,
-        )
-
-        self.assertEqual(math_plan.common_count, 24)
-        self.assertEqual(long_qa_plan.common_count, 16)
+        self.assertEqual(math_plan.common_count, 40)
 
 
 if __name__ == "__main__":

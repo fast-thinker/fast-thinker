@@ -126,6 +126,9 @@ you override it. For example, `--burn-rate 0.9` assigns weight
 `0.9` to burn UID 0 and distributes the remaining `0.1` among scored miners in
 proportion to their scores. The accepted range is `0` through `1`, inclusive.
 
+Long-context QA is disabled by default. Enable it with
+`--long-context-qa-per-epoch N` or `THINKER_N_LONG_CONTEXT_QA_PER_EPOCH=N`.
+
 Evaluation scores are averaged within each task type before the task types are
 combined. Within a task group, each problem is weighted by peer correctness so
 rarely solved problems count more and universally solved or universally missed

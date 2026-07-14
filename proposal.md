@@ -149,8 +149,8 @@ difficult qualification batch does not immediately remove a strong model.
 
 Full evaluation uses a broader reasoning workload. The current defaults are:
 
-- 30 generated math problems; and
-- 20 retrieval-backed long-context question-answering problems.
+- 50 generated math problems; and
+- 0 retrieval-backed long-context question-answering problems.
 
 Generated math uses self-contained exact-verification tracks with expanded
 variable ranges so each family has a large prompt space instead of a small
@@ -312,8 +312,9 @@ populated band scores, so each band has equal influence regardless of how many
 questions it contains. Task scores are then combined with the default weights
 `0.50` for math, `0.30` for long-context QA, and `0.20` for multiple choice.
 Weights are renormalized across the task types present in a stage; consequently,
-the full evaluation combines math and long-context QA at `62.5%` and `37.5%`,
-while multiple choice is used by the qualification stage.
+the default full evaluation uses math only, while multiple choice is used by the
+qualification stage. If long-context QA is enabled, it is included using the
+renormalized task weights for the active full-evaluation tasks.
 
 This prevents a large number of easy questions from overwhelming performance on
 harder or less frequent tasks. A candidate must also have enough valid results in
@@ -374,8 +375,8 @@ benchmark mix evolves.
 | Shared portion of an eligible batch | 80% |
 | Qualification multiple-choice problems | 25 |
 | Qualification problems with thinking | 25 |
-| Full-evaluation math problems | 30 |
-| Full-evaluation long-context problems | 20 |
+| Full-evaluation math problems | 50 |
+| Full-evaluation long-context problems | 0 |
 | Qualification candidates advancing | 10 |
 | Math difficulty bands | 4 |
 | Math score weight | 50% |
