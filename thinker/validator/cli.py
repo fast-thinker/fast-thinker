@@ -386,6 +386,11 @@ def _add_run_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argum
     parser.add_argument(
         "--wandb-entity", default=None, help="Wandb entity/team (default: config.wandb_entity, or the API key's default)"
     )
+    parser.add_argument(
+        "--no-wandb",
+        action="store_true",
+        help="Disable W&B logging for this run.",
+    )
     _add_retrieval_arguments(parser)
     parser.add_argument(
         "--no-retrieval",
@@ -406,6 +411,17 @@ def build_parser() -> argparse.ArgumentParser:
     _add_run_subparser(subparsers)
     _add_chat_subparser(subparsers)
     return parser
+
+
+def _run_mode_tags(args: argparse.Namespace, test_mode: str | None) -> tuple[str, ...]:
+    tags: list[str] = []
+    if test_mode is not None:
+        tags.append("test_mode")
+    if args.no_set_weights or test_mode is not None:
+        tags.append("no_set_weights")
+    if args.no_wandb or test_mode is not None:
+        tags.append("no_wandb")
+    return tuple(tags)
 
 
 def _serve_until_signalled(on_stop) -> None:
@@ -830,7 +846,7 @@ def _build_wandb_logger(args: argparse.Namespace, config: ThinkerConfig, validat
         project_path, args.wandb_entity or config.wandb_entity or None
     )
     _status(
-        "initializing compulsory online W&B run: "
+        "initializing online W&B run: "
         f"project={f'{entity}/{project}' if entity else project}"
     )
     wandb_run = init_validator_run(
@@ -1197,10 +1213,10 @@ def _run_validator_epochs(
                     wandb_logger.log_epoch(epoch, results)
                 except Exception as exc:
                     logger.exception(
-                        "compulsory W&B logging failed for epoch %s", epoch
+                        "W&B logging failed for epoch %s", epoch
                     )
                     _status(
-                        f"epoch {epoch}: compulsory W&B logging failed with "
+                        f"epoch {epoch}: W&B logging failed with "
                         f"{type(exc).__name__}: {exc}; stopping validator"
                     )
                     return 1
@@ -1209,6 +1225,8 @@ def _run_validator_epochs(
                 _status(
                     f"epoch {epoch}: test mode {args.test_mode}; W&B logging skipped"
                 )
+            elif args.no_wandb:
+                _status(f"epoch {epoch}: W&B logging skipped by --no-wandb")
             for miner_id, result in results.items():
                 if result.score is not None:
                     print(
@@ -1305,12 +1323,15 @@ def _run_validator_loop(args: argparse.Namespace) -> int:
             test_mode == "long_qa"
             or (test_mode is None and long_context_qa_count > 0)
         )
+        run_tags = _run_mode_tags(args, test_mode)
         _status(
             f"starting validator run: network={args.network}, netuid={args.netuid}, "
             f"mock={args.mock}, set_weights={not args.no_set_weights and test_mode is None}, "
+            f"wandb={not args.no_wandb and test_mode is None}, "
             f"burn_rate={args.burn_rate}, "
             f"evaluation_delay_epochs={evaluation_delay_epochs}, "
-            f"test_mode={test_mode or 'off'}"
+            f"test_mode={test_mode or 'off'}, "
+            f"run_tags={','.join(run_tags) if run_tags else 'none'}"
         )
         if not args.no_retrieval and needs_retrieval:
             retrieval_handle = start_validator_runtime(config, args)
@@ -1384,10 +1405,12 @@ def _run_validator_loop(args: argparse.Namespace) -> int:
                 f"then writing the latest scores every {_WEIGHT_RETRY_SECONDS}s"
             )
         weight_setter.start()
-        if test_mode is None:
+        if test_mode is None and not args.no_wandb:
             wandb_logger = _build_wandb_logger(
                 args, config, wallet.hotkey.ss58_address
             )
+        elif args.no_wandb:
+            _status("W&B logging disabled by --no-wandb")
         else:
             _status(f"test mode {test_mode}: W&B logging disabled")
 

@@ -15,6 +15,7 @@ tests/*
 !tests/test_inference.py
 !tests/test_scoring.py
 !tests/test_multiple_choice.py
+!tests/test_validator_cli.py
 .venv/
 venv/
 .tmp/

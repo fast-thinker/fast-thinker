@@ -265,7 +265,7 @@ def init_validator_run(
         reinit=True,
     )
     if run is None:
-        raise RuntimeError("wandb.init returned no run; online W&B logging is compulsory")
+        raise RuntimeError("wandb.init returned no run")
     return run
 
 

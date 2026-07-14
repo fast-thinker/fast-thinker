@@ -83,7 +83,7 @@ non-interactive submissions, provide the choice with `--validator-uids`.
 
 ## Validator Run
 
-Set the required W&B key:
+Set the W&B key when logging is enabled:
 
 ```bash
 export WANDB_API_KEY=wandb_api_key
@@ -99,10 +99,22 @@ thinker-validator run \
   --burn-rate 1
 ```
 
-Required runtime input: `WANDB_API_KEY`. Set `--wallet` and `--hotkey` only when
-you are not using the local defaults. Subnet constants such as network, netuid,
-owner hotkey, shared W&B project, model revision, and retrieval defaults are
-configured in code.
+For a dry operational run without chain writes or W&B logging:
+
+```bash
+thinker-validator run \
+  --wallet validator-wallet \
+  --hotkey validator-hotkey \
+  --evaluation-delay-epochs 6 \
+  --burn-rate 1 \
+  --no-set-weights \
+  --no-wandb
+```
+
+Required runtime input: `WANDB_API_KEY`, unless `--no-wandb` is set. Set
+`--wallet` and `--hotkey` only when you are not using the local defaults.
+Subnet constants such as network, netuid, owner hotkey, shared W&B project,
+model revision, and retrieval defaults are configured in code.
 
 `--evaluation-delay-epochs` defaults to `6`. Set it to `0` to disable the
 maturity delay for local testing. While submissions mature, the validator logs
