@@ -39,7 +39,7 @@ class ThinkerConfig:
 
     owner_hotkey: str = field(
         default_factory=lambda: _env_str(
-            "THINKER_OWNER_HOTKEY", "5Eo5pyNqVqdsmBJJWoPegQU7BakmNL7Ndwqo7VaZRTJdoSG5"
+            "THINKER_OWNER_HOTKEY", "5ECWmM21HNE834eB296ZDR8aBMW5psWcD5eJhFzdowKyrbNW"
         )
     )
     common_seed_repo: str = field(
