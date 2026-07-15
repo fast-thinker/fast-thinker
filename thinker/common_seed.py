@@ -16,6 +16,7 @@ from thinker.submission.crypto import (
 )
 
 COMMON_SAMPLE_RATE = 0.8
+COMMON_SAMPLE_EPOCH_PERIOD = 140
 COMMON_SEED_PATH_PREFIX = "common-seeds"
 _COMMON_SEED_VERSION = 1
 _MAX_COMMON_SEED_FILE_BYTES = 512 * 1024
@@ -234,8 +235,9 @@ def build_sample_seed_plan(
     if common_seed is not None:
         _validate_seed(common_seed)
         common_count = int(count * COMMON_SAMPLE_RATE)
+    common_epoch = epoch // COMMON_SAMPLE_EPOCH_PERIOD
     common = tuple(
-        _derived_seed(common_seed, epoch=epoch, namespace=namespace, index=index)
+        _derived_seed(common_seed, epoch=common_epoch, namespace=namespace, index=index)
         for index in range(common_count)
     )
     private = tuple(
@@ -247,6 +249,7 @@ def build_sample_seed_plan(
 
 __all__ = [
     "COMMON_SAMPLE_RATE",
+    "COMMON_SAMPLE_EPOCH_PERIOD",
     "COMMON_SEED_PATH_PREFIX",
     "CommonSeedError",
     "CommonSeedRecord",

@@ -2,7 +2,11 @@ import os
 import unittest
 from unittest import mock
 
-from thinker.common_seed import COMMON_SAMPLE_RATE, build_sample_seed_plan
+from thinker.common_seed import (
+    COMMON_SAMPLE_EPOCH_PERIOD,
+    COMMON_SAMPLE_RATE,
+    build_sample_seed_plan,
+)
 from thinker.config import ThinkerConfig
 from thinker.problems.interface import extract_final_boxed_answer
 from thinker.problems.tracks import constructive, depth_control, olympiad
@@ -132,6 +136,7 @@ class EvaluationDefaultsTest(unittest.TestCase):
 
         self.assertEqual(config.n_problems_per_epoch, 50)
         self.assertEqual(config.n_long_context_qa_per_epoch, 0)
+        self.assertEqual(config.qualification_multiple_choice_per_epoch, 20)
 
     def test_common_seed_rate_uses_eighty_percent_of_batch(self) -> None:
         self.assertEqual(COMMON_SAMPLE_RATE, 0.8)
@@ -144,6 +149,42 @@ class EvaluationDefaultsTest(unittest.TestCase):
             common_seed="0" * 64,
         )
         self.assertEqual(math_plan.common_count, 40)
+
+    def test_common_seed_samples_repeat_within_epoch_period(self) -> None:
+        first = build_sample_seed_plan(
+            10,
+            private_seed="private-a",
+            epoch=COMMON_SAMPLE_EPOCH_PERIOD - 1,
+            namespace="full_evaluation:math",
+            common_seed="0" * 64,
+        )
+        second = build_sample_seed_plan(
+            10,
+            private_seed="private-b",
+            epoch=0,
+            namespace="full_evaluation:math",
+            common_seed="0" * 64,
+        )
+        third = build_sample_seed_plan(
+            10,
+            private_seed="private-a",
+            epoch=COMMON_SAMPLE_EPOCH_PERIOD,
+            namespace="full_evaluation:math",
+            common_seed="0" * 64,
+        )
+
+        self.assertEqual(
+            first.seeds[: first.common_count],
+            second.seeds[: second.common_count],
+        )
+        self.assertNotEqual(
+            first.seeds[first.common_count :],
+            second.seeds[second.common_count :],
+        )
+        self.assertNotEqual(
+            first.seeds[: first.common_count],
+            third.seeds[: third.common_count],
+        )
 
 
 if __name__ == "__main__":
