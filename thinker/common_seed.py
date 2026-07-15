@@ -235,7 +235,7 @@ def build_sample_seed_plan(
     if common_seed is not None:
         _validate_seed(common_seed)
         common_count = int(count * COMMON_SAMPLE_RATE)
-    common_epoch = epoch // COMMON_SAMPLE_EPOCH_PERIOD
+    common_epoch = epoch % COMMON_SAMPLE_EPOCH_PERIOD
     common = tuple(
         _derived_seed(common_seed, epoch=common_epoch, namespace=namespace, index=index)
         for index in range(common_count)

@@ -150,25 +150,25 @@ class EvaluationDefaultsTest(unittest.TestCase):
         )
         self.assertEqual(math_plan.common_count, 40)
 
-    def test_common_seed_samples_repeat_within_epoch_period(self) -> None:
+    def test_common_seed_samples_repeat_after_epoch_period(self) -> None:
         first = build_sample_seed_plan(
             10,
             private_seed="private-a",
-            epoch=COMMON_SAMPLE_EPOCH_PERIOD - 1,
+            epoch=0,
             namespace="full_evaluation:math",
             common_seed="0" * 64,
         )
         second = build_sample_seed_plan(
             10,
             private_seed="private-b",
-            epoch=0,
+            epoch=COMMON_SAMPLE_EPOCH_PERIOD,
             namespace="full_evaluation:math",
             common_seed="0" * 64,
         )
         third = build_sample_seed_plan(
             10,
             private_seed="private-a",
-            epoch=COMMON_SAMPLE_EPOCH_PERIOD,
+            epoch=COMMON_SAMPLE_EPOCH_PERIOD - 1,
             namespace="full_evaluation:math",
             common_seed="0" * 64,
         )
