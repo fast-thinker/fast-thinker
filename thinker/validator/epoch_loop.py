@@ -318,76 +318,26 @@ class EpochLoop:
             for task, value in available.items()
         ) / total_weight
 
-    def _problem_weight(self, correct_count: int, total_count: int) -> float:
-        floor = min(1.0, max(0.0, float(self._config.problem_weight_floor)))
-        gamma = max(0.0, float(self._config.problem_weight_gamma))
-        total = max(0, int(total_count))
-        correct = min(total, max(0, int(correct_count)))
-        if total <= 0 or correct == 0 or correct == total:
-            return floor
-        p_correct = correct / total
-        return floor + (1.0 - floor) * ((1.0 - p_correct) ** gamma)
-
     def _math_sample_weights(
         self,
         batch: list[ProblemInstance],
         completions_by_miner: dict[str, list[tuple[str, int]]],
     ) -> dict[tuple[str, str], float]:
-        weights: dict[tuple[str, str], float] = {}
-        for index, instance in enumerate(batch):
-            total = 0
-            correct = 0
-            track = get_track(instance.track)
-            for completions in completions_by_miner.values():
-                if index >= len(completions):
-                    continue
-                total += 1
-                if track.verify(instance.seed, completions[index][0]):
-                    correct += 1
-            weights[(instance.track, instance.seed)] = self._problem_weight(
-                correct, total
-            )
-        return weights
+        return {(instance.track, instance.seed): 1.0 for instance in batch}
 
     def _long_context_sample_weights(
         self,
         batch: list[LongContextQAInstance],
         results_by_miner: dict[str, list[LongContextMinerResult]],
     ) -> dict[tuple[str, str], float]:
-        weights: dict[tuple[str, str], float] = {}
-        for index, instance in enumerate(batch):
-            total = 0
-            correct = 0
-            for results in results_by_miner.values():
-                if index >= len(results):
-                    continue
-                total += 1
-                if results[index].miner.verified:
-                    correct += 1
-            weights[(TASK_LONG_CONTEXT_QA, instance.seed)] = self._problem_weight(
-                correct, total
-            )
-        return weights
+        return {(TASK_LONG_CONTEXT_QA, instance.seed): 1.0 for instance in batch}
 
     def _multiple_choice_sample_weights(
         self,
         batch: list[MultipleChoiceInstance],
         results_by_miner: dict[str, list[MultipleChoiceMinerResult]],
     ) -> dict[tuple[str, str], float]:
-        weights: dict[tuple[str, str], float] = {}
-        for index, instance in enumerate(batch):
-            total = 0
-            correct = 0
-            for results in results_by_miner.values():
-                if index >= len(results):
-                    continue
-                total += 1
-                if results[index].miner.verified:
-                    correct += 1
-            weights[(TASK_MULTIPLE_CHOICE, instance.seed)] = self._problem_weight(
-                correct, total
-            )
-        return weights
+        return {(TASK_MULTIPLE_CHOICE, instance.seed): 1.0 for instance in batch}
 
     @staticmethod
     def _sample_weight(
@@ -576,6 +526,10 @@ class EpochLoop:
             value = result.task_scores.get(task)
             return "-" if value is None else f"{value:.4f}"
 
+        def correctness_score(result: MinerEpochResult) -> str:
+            value = result.correctness_score
+            return "-" if value is None else f"{value:.4f}"
+
         rows: list[list[str]] = []
         rank = 0
         for miner_id, result in sorted(results.items(), key=sort_key):
@@ -584,6 +538,7 @@ class EpochLoop:
                 math_score = "-"
                 long_qa_score = "-"
                 science_score = "-"
+                correctness = "-"
                 coverage = "-"
                 reason = result.rejected_reason or "rejected"
                 bands = "-"
@@ -594,6 +549,7 @@ class EpochLoop:
                 math_score = component_score(result, TASK_MATH)
                 long_qa_score = component_score(result, TASK_LONG_CONTEXT_QA)
                 science_score = component_score(result, TASK_MULTIPLE_CHOICE)
+                correctness = correctness_score(result)
                 coverage = "ok" if result.score.coverage_ok else "missing"
                 reason = result.score.reason or "ok"
                 bands = ", ".join(
@@ -610,6 +566,7 @@ class EpochLoop:
                     math_score,
                     long_qa_score,
                     science_score,
+                    correctness,
                     coverage,
                     cls._table_cell(reason, limit=64),
                     cls._table_cell(bands, limit=96),
@@ -624,6 +581,7 @@ class EpochLoop:
             "math",
             "long_qa",
             "science",
+            "correctness",
             "coverage",
             "reason",
             "bands",
