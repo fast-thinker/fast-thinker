@@ -76,7 +76,7 @@ class ThinkerConfig:
     qualification_long_context_qa_per_epoch: int = field(default_factory=lambda: _env_int("THINKER_QUALIFICATION_LONG_CONTEXT_QA_PER_EPOCH", 0))
     qualification_multiple_choice_per_epoch: int = field(
         default_factory=lambda: _env_int(
-            "THINKER_QUALIFICATION_MULTIPLE_CHOICE_PER_EPOCH", 25
+            "THINKER_QUALIFICATION_MULTIPLE_CHOICE_PER_EPOCH", 20
         )
     )
     multiple_choice_dataset: str = field(

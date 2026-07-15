@@ -350,8 +350,8 @@ confidence = min(1, qualification_problem_count / full_problem_count)
 displayed_score = qualification_rank * confidence
 ```
 
-Under the default `25` qualification and `50` full-evaluation problems,
-`confidence = 25 / 50 = 0.5`.
+Under the default `20` qualification and `50` full-evaluation problems,
+`confidence = 20 / 50 = 0.4`.
 
 This reduces large ranking swings caused by one unusually easy or difficult
 batch without allowing old performance to dominate new evidence.
@@ -373,8 +373,8 @@ benchmark mix evolves.
 | --- | ---: |
 | Candidate maturity | 6 epochs |
 | Shared portion of an eligible batch | 80% |
-| Qualification multiple-choice problems | 25 |
-| Qualification problems with thinking | 25 |
+| Qualification multiple-choice problems | 20 |
+| Qualification problems with thinking | 20 |
 | Full-evaluation math problems | 50 |
 | Full-evaluation long-context problems | 0 |
 | Qualification candidates advancing | 10 |
