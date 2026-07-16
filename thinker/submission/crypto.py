@@ -248,10 +248,19 @@ def _signature_payload(manifest: dict[str, Any]) -> bytes:
 
 
 def _normalize_signature(signature: Any) -> bytes:
-    if isinstance(signature, bytes):
-        return signature
     if isinstance(signature, bytearray):
-        return bytes(signature)
+        signature = bytes(signature)
+    if isinstance(signature, bytes):
+        try:
+            text = signature.decode("ascii")
+        except UnicodeDecodeError:
+            return signature
+        stripped = text[2:] if text.startswith("0x") else text
+        if stripped and len(stripped) % 2 == 0 and all(
+            ch in "0123456789abcdefABCDEF" for ch in stripped
+        ):
+            return bytes.fromhex(stripped)
+        return signature
     if isinstance(signature, str):
         text = signature[2:] if signature.startswith("0x") else signature
         try:

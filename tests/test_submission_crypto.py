@@ -14,9 +14,10 @@ class SubmissionCryptoTests(unittest.TestCase):
             "adapter_config.json": b'{"peft_type":"LORA"}',
             "adapter_model.safetensors": b"weights",
         }
+        raw_signature = bytes.fromhex("11" * 64)
         wallet = SimpleNamespace(
             hotkey=SimpleNamespace(
-                sign=lambda payload: b"signature",
+                sign=lambda payload: raw_signature.hex().encode("ascii"),
             )
         )
         payload = pack_signed_adapter_bundle(
@@ -27,9 +28,13 @@ class SubmissionCryptoTests(unittest.TestCase):
             miner_hotkey="5miner",
         )
 
+        def fake_verify(miner_hotkey, manifest, signature):
+            self.assertEqual(signature, raw_signature)
+            return True
+
         with patch(
             "thinker.submission.crypto.verify_submission_manifest_signature",
-            return_value=True,
+            side_effect=fake_verify,
         ):
             self.assertEqual(
                 unpack_signed_adapter_bundle(
