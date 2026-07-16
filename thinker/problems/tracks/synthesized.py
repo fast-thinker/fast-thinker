@@ -102,46 +102,8 @@ def _cached_parquet_paths(dataset_name: str, split: str) -> list[str]:
     return paths
 
 
-_PARAPHRASE_PROMPT = """Rewrite the math problem without changing its meaning.
-
-Rules:
-- Keep every mathematical condition, number, variable, and requested final answer type unchanged.
-- Do not solve the problem.
-- Do not reveal or invent the answer.
-- Return only one <problem>...</problem> block containing the rewritten problem.
-
-Short example:
-Original problem:
-Compute 12 + 5.
-Response:
-<problem>
-Find the sum of 12 and 5.
-</problem>
-
-Original problem:
-<<PROBLEM>>
-
-Response:"""
-
-_PARAPHRASE_REPAIR_PROMPT = """Convert the previous response into the required tagged format.
-
-Rules:
-- Return only one <problem>...</problem> block.
-- The block content must be a rewritten version of the original problem.
-- Do not solve the problem.
-- Do not include markdown fences.
-
-Original problem:
-<<PROBLEM>>
-
-Previous invalid response:
-<<INVALID_RESPONSE>>
-
-Valid JSON response:"""
-
 _BOXED_RE = re.compile(r"\\boxed\s*\{\s*(.+?)\s*\}", re.DOTALL)
 _FINAL_ANSWER_RE = re.compile(r"^\s*(?:final\s+answer|answer)\s*:?\s*", re.IGNORECASE)
-_TAGGED_PROBLEM_RE = re.compile(r"^\s*<problem>\s*(.*?)\s*</problem>\s*$", re.DOTALL | re.IGNORECASE)
 
 
 class LLMClient(Protocol):
@@ -177,37 +139,6 @@ def _row_answer(row: dict[str, Any]) -> str:
     raise ValueError("Nemotron-Math row has no expected answer field")
 
 
-def _parse_paraphrase_response(text: str) -> str:
-    text = text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json|xml)?\s*", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"\s*```$", "", text)
-    tagged = _TAGGED_PROBLEM_RE.fullmatch(text)
-    if tagged:
-        problem = _clean_text(tagged.group(1))
-        if not problem:
-            raise ValueError("paraphrase response <problem> block must be non-empty")
-        return problem
-    data = json.loads(text)
-    if not isinstance(data, dict):
-        raise ValueError("paraphrase response must be a JSON object")
-    problem = _clean_text(data.get("problem"))
-    if not problem:
-        raise ValueError("paraphrase response JSON must contain non-empty problem")
-    return problem
-
-
-def _paraphrase_prompt(problem: str) -> str:
-    return _PARAPHRASE_PROMPT.replace("<<PROBLEM>>", problem)
-
-
-def _paraphrase_repair_prompt(problem: str, invalid_response: str) -> str:
-    return (
-        _PARAPHRASE_REPAIR_PROMPT.replace("<<PROBLEM>>", problem)
-        .replace("<<INVALID_RESPONSE>>", invalid_response)
-    )
-
-
 @dataclass(frozen=True)
 class _SynthesizedSource:
     gold_answer: str
@@ -227,13 +158,12 @@ class SynthesizedTrack:
 
     def __init__(
         self,
-        llm_client: LLMClient,
+        llm_client: LLMClient | None = None,
         *,
         dataset_name: str = DEFAULT_DATASET,
         split: str = DEFAULT_SPLIT,
         max_scan: int = 2_000,
     ):
-        self._llm = llm_client
         self._dataset_name = dataset_name
         self._split = split
         self._max_scan = max(1, int(max_scan))
@@ -294,22 +224,6 @@ class SynthesizedTrack:
             f"checking {len(tried)} deterministic candidates"
         )
 
-    def _paraphrase(self, seed: str, problem: str) -> str:
-        response = self._llm.complete(
-            _paraphrase_prompt(problem),
-            temperature=0.0,
-            seed=_int_seed(seed, "paraphrase"),
-        )
-        try:
-            return _parse_paraphrase_response(response)
-        except (json.JSONDecodeError, ValueError):
-            repair_response = self._llm.complete(
-                _paraphrase_repair_prompt(problem, response.strip()),
-                temperature=0.0,
-                seed=_int_seed(seed, "paraphrase-repair"),
-            )
-            return _parse_paraphrase_response(repair_response)
-
     def _source(self, seed: str) -> _SynthesizedSource:
         cached = self._source_cache.get(seed)
         if cached is not None:
@@ -326,19 +240,13 @@ class SynthesizedTrack:
 
     def _generate(self, seed: str) -> _SynthesizedInstance:
         source = self._source(seed)
-        transform = "base_model_paraphrase"
-        try:
-            prompt = self._paraphrase(seed, source.source_problem)
-        except (json.JSONDecodeError, ValueError):
-            prompt = source.source_problem
-            transform = "original_problem_fallback"
         return _SynthesizedInstance(
             gold_answer=source.gold_answer,
             source_problem=source.source_problem,
             dataset_index=source.dataset_index,
             problem_id=source.problem_id,
-            prompt=prompt,
-            transform=transform,
+            prompt=source.source_problem,
+            transform="dataset_problem",
         )
 
     def _instance(self, seed: str) -> _SynthesizedInstance:
@@ -378,7 +286,7 @@ class SynthesizedTrack:
         return max(128, len(inst.source_problem) // 4 + 64)
 
 
-def register(llm_client: LLMClient, **kwargs) -> SynthesizedTrack:
+def register(llm_client: LLMClient | None = None, **kwargs) -> SynthesizedTrack:
     track = SynthesizedTrack(llm_client, **kwargs)
     register_track(track)
     return track
