@@ -20,6 +20,8 @@ _MAX_DEFAULT_CONFIG_BYTES = 64 * 1024
 _MAX_DEFAULT_RECIPIENTS = 256
 _MAX_RECIPIENT_ID_BYTES = 256
 _ALLOWED_ADAPTER_FILES = frozenset({"adapter_config.json", "adapter_model.safetensors"})
+_SIGNED_BUNDLE_VERSION = 1
+_SIGNED_BUNDLE_DOMAIN = b"thinker-signed-adapter-bundle-v1\0"
 
 
 class SubmissionFormatError(ValueError):
@@ -227,6 +229,91 @@ def content_hash(submission: EncryptedSubmission) -> str:
     return hasher.hexdigest()
 
 
+def adapter_files_hash(files: dict[str, bytes]) -> str:
+    digest = hashlib.sha256()
+    for name in sorted(files):
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(files[name])
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _signature_payload(manifest: dict[str, Any]) -> bytes:
+    return _SIGNED_BUNDLE_DOMAIN + json.dumps(
+        manifest,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _normalize_signature(signature: Any) -> bytes:
+    if isinstance(signature, bytes):
+        return signature
+    if isinstance(signature, bytearray):
+        return bytes(signature)
+    if isinstance(signature, str):
+        text = signature[2:] if signature.startswith("0x") else signature
+        try:
+            return bytes.fromhex(text)
+        except ValueError as exc:
+            raise SubmissionFormatError("wallet returned a non-hex signature") from exc
+    raise SubmissionFormatError("wallet returned an unsupported signature type")
+
+
+def sign_submission_manifest(wallet: Any, manifest: dict[str, Any]) -> bytes:
+    hotkey = getattr(wallet, "hotkey", None)
+    sign = getattr(hotkey, "sign", None)
+    if not callable(sign):
+        raise SubmissionFormatError("wallet hotkey cannot sign submissions")
+    return _normalize_signature(sign(_signature_payload(manifest)))
+
+
+def verify_submission_manifest_signature(
+    miner_hotkey: str,
+    manifest: dict[str, Any],
+    signature: bytes,
+) -> bool:
+    try:
+        from substrateinterface import Keypair
+
+        keypair = Keypair(ss58_address=miner_hotkey)
+        payload = _signature_payload(manifest)
+        return bool(keypair.verify(payload, signature)) or bool(
+            keypair.verify(payload, signature.hex())
+        )
+    except Exception:
+        return False
+
+
+def _signed_manifest(
+    *,
+    netuid: int,
+    epoch: int,
+    miner_hotkey: str,
+    adapter_hash: str,
+) -> dict[str, Any]:
+    if isinstance(netuid, bool) or not isinstance(netuid, int) or netuid < 0:
+        raise SubmissionFormatError("netuid must be a non-negative integer")
+    if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
+        raise SubmissionFormatError("epoch must be a non-negative integer")
+    if not isinstance(miner_hotkey, str) or not miner_hotkey:
+        raise SubmissionFormatError("miner hotkey must be non-empty")
+    if not isinstance(adapter_hash, str) or len(adapter_hash) != 64:
+        raise SubmissionFormatError("adapter hash must be 32-byte lowercase hex")
+    try:
+        int(adapter_hash, 16)
+    except ValueError as exc:
+        raise SubmissionFormatError("adapter hash must be 32-byte lowercase hex") from exc
+    return {
+        "v": _SIGNED_BUNDLE_VERSION,
+        "netuid": netuid,
+        "epoch": epoch,
+        "miner_hotkey": miner_hotkey,
+        "adapter_hash": adapter_hash,
+    }
+
+
 def pack_adapter_bundle(
     files: dict[str, bytes],
     *,
@@ -250,6 +337,70 @@ def pack_adapter_bundle(
     ).encode("utf-8")
 
 
+def pack_signed_adapter_bundle(
+    files: dict[str, bytes],
+    *,
+    wallet: Any,
+    netuid: int,
+    epoch: int,
+    miner_hotkey: str,
+    max_total_bytes: int = _MAX_DEFAULT_ADAPTER_BYTES,
+    max_config_bytes: int = _MAX_DEFAULT_CONFIG_BYTES,
+) -> bytes:
+    packed = pack_adapter_bundle(
+        files,
+        max_total_bytes=max_total_bytes,
+        max_config_bytes=max_config_bytes,
+    )
+    data = _strict_json_loads(packed.decode("utf-8"))
+    manifest = _signed_manifest(
+        netuid=netuid,
+        epoch=epoch,
+        miner_hotkey=miner_hotkey,
+        adapter_hash=adapter_files_hash(files),
+    )
+    signature = sign_submission_manifest(wallet, manifest)
+    return json.dumps(
+        {
+            "files": data["files"],
+            "manifest": manifest,
+            "signature": base64.b64encode(signature).decode("ascii"),
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _decode_adapter_files(
+    files_raw: Any,
+    *,
+    max_total_bytes: int,
+    max_config_bytes: int,
+) -> dict[str, bytes]:
+    if not isinstance(files_raw, dict):
+        raise SubmissionFormatError("adapter bundle files must be an object")
+    if set(files_raw) != _ALLOWED_ADAPTER_FILES:
+        raise SubmissionFormatError(
+            "adapter bundle must contain exactly adapter_config.json and adapter_model.safetensors"
+        )
+    files = {
+        "adapter_config.json": _decode_b64(
+            files_raw["adapter_config.json"],
+            field="adapter_config.json",
+            max_bytes=max_config_bytes,
+        ),
+        "adapter_model.safetensors": _decode_b64(
+            files_raw["adapter_model.safetensors"],
+            field="adapter_model.safetensors",
+            max_bytes=max_total_bytes,
+        ),
+    }
+    if not files["adapter_config.json"] or not files["adapter_model.safetensors"]:
+        raise SubmissionFormatError("adapter files must not be empty")
+    if sum(len(value) for value in files.values()) > max_total_bytes:
+        raise SubmissionFormatError("decoded adapter bundle exceeds its total size limit")
+    return files
+
+
 def unpack_adapter_bundle(
     plaintext: bytes,
     *,
@@ -265,26 +416,63 @@ def unpack_adapter_bundle(
         raise SubmissionFormatError("adapter bundle is not UTF-8 JSON") from exc
     if not isinstance(data, dict) or set(data) != {"files"} or not isinstance(data["files"], dict):
         raise SubmissionFormatError("adapter bundle must contain only a files object")
-    if set(data["files"]) != _ALLOWED_ADAPTER_FILES:
-        raise SubmissionFormatError(
-            "adapter bundle must contain exactly adapter_config.json and adapter_model.safetensors"
-        )
-    files = {
-        "adapter_config.json": _decode_b64(
-            data["files"]["adapter_config.json"],
-            field="adapter_config.json",
-            max_bytes=max_config_bytes,
-        ),
-        "adapter_model.safetensors": _decode_b64(
-            data["files"]["adapter_model.safetensors"],
-            field="adapter_model.safetensors",
-            max_bytes=max_total_bytes,
-        ),
+    return _decode_adapter_files(
+        data["files"],
+        max_total_bytes=max_total_bytes,
+        max_config_bytes=max_config_bytes,
+    )
+
+
+def unpack_signed_adapter_bundle(
+    plaintext: bytes,
+    *,
+    expected_miner_hotkey: str,
+    expected_epoch: int,
+    expected_netuid: int,
+    max_total_bytes: int = _MAX_DEFAULT_ADAPTER_BYTES,
+    max_config_bytes: int = _MAX_DEFAULT_CONFIG_BYTES,
+) -> dict[str, bytes]:
+    max_plaintext_bytes = _max_b64_chars(max_total_bytes) + 8192
+    if not isinstance(plaintext, bytes) or len(plaintext) > max_plaintext_bytes:
+        raise SubmissionFormatError("decrypted adapter bundle exceeds its encoded size limit")
+    try:
+        data = _strict_json_loads(plaintext.decode("utf-8"))
+    except UnicodeDecodeError as exc:
+        raise SubmissionFormatError("adapter bundle is not UTF-8 JSON") from exc
+    expected_fields = {"files", "manifest", "signature"}
+    if not isinstance(data, dict) or set(data) != expected_fields:
+        raise SubmissionFormatError("adapter bundle must contain signed files and manifest")
+    manifest = data["manifest"]
+    if not isinstance(manifest, dict):
+        raise SubmissionFormatError("submission manifest must be an object")
+    required_manifest = {
+        "v",
+        "netuid",
+        "epoch",
+        "miner_hotkey",
+        "adapter_hash",
     }
-    if not files["adapter_config.json"] or not files["adapter_model.safetensors"]:
-        raise SubmissionFormatError("adapter files must not be empty")
-    if sum(len(value) for value in files.values()) > max_total_bytes:
-        raise SubmissionFormatError("decoded adapter bundle exceeds its total size limit")
+    if set(manifest) != required_manifest:
+        raise SubmissionFormatError("submission manifest has unexpected fields")
+    if manifest.get("v") != _SIGNED_BUNDLE_VERSION:
+        raise SubmissionFormatError("unsupported submission manifest version")
+    if manifest.get("netuid") != expected_netuid:
+        raise SubmissionFormatError("submission manifest netuid mismatch")
+    if manifest.get("epoch") != expected_epoch:
+        raise SubmissionFormatError("submission manifest epoch mismatch")
+    if manifest.get("miner_hotkey") != expected_miner_hotkey:
+        raise SubmissionFormatError("submission manifest miner mismatch")
+    files = _decode_adapter_files(
+        data["files"],
+        max_total_bytes=max_total_bytes,
+        max_config_bytes=max_config_bytes,
+    )
+    actual_hash = adapter_files_hash(files)
+    if manifest.get("adapter_hash") != actual_hash:
+        raise SubmissionFormatError("submission manifest adapter hash mismatch")
+    signature = _decode_b64(data["signature"], field="signature", max_bytes=128)
+    if not verify_submission_manifest_signature(expected_miner_hotkey, manifest, signature):
+        raise SubmissionFormatError("submission manifest signature is invalid")
     return files
 
 

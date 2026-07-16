@@ -10,7 +10,7 @@ from thinker.submission.crypto import (
     EncryptedSubmission,
     content_hash,
     encrypt_for_recipients,
-    pack_adapter_bundle,
+    pack_signed_adapter_bundle,
 )
 from thinker.submission.huggingface import (
     HuggingFaceLocator,
@@ -48,15 +48,28 @@ def discover_validator_recipients(subtensor: Any, netuid: int) -> list[Validator
 
 
 def build_submission(
-    adapter_dir: Path | str, recipient_pubkeys: dict[str, bytes], config: ThinkerConfig
+    adapter_dir: Path | str,
+    recipient_pubkeys: dict[str, bytes],
+    config: ThinkerConfig,
+    *,
+    wallet: Any,
+    netuid: int,
+    epoch: int,
 ) -> EncryptedSubmission:
     adapter_dir = Path(adapter_dir)
     files = {
         ADAPTER_CONFIG_NAME: (adapter_dir / ADAPTER_CONFIG_NAME).read_bytes(),
         ADAPTER_WEIGHTS_NAME: (adapter_dir / ADAPTER_WEIGHTS_NAME).read_bytes(),
     }
-    plaintext = pack_adapter_bundle(
+    miner_hotkey = getattr(getattr(wallet, "hotkey", None), "ss58_address", None)
+    if not isinstance(miner_hotkey, str) or not miner_hotkey:
+        raise ValueError("wallet hotkey has no ss58 address")
+    plaintext = pack_signed_adapter_bundle(
         files,
+        wallet=wallet,
+        netuid=netuid,
+        epoch=epoch,
+        miner_hotkey=miner_hotkey,
         max_total_bytes=config.max_adapter_bytes,
         max_config_bytes=config.max_adapter_config_bytes,
     )
@@ -97,7 +110,14 @@ def submit(
             "confirmed its encryption pubkey on chain"
         )
 
-    submission = build_submission(adapter_dir, recipient_pubkeys, config)
+    submission = build_submission(
+        adapter_dir,
+        recipient_pubkeys,
+        config,
+        wallet=wallet,
+        netuid=netuid,
+        epoch=epoch,
+    )
     try:
         locator = upload_encrypted_submission(
             hf_repo_id, submission, token=hf_token, api=api

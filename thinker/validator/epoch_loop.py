@@ -12,7 +12,7 @@ from typing import Any, Callable, Protocol
 
 from tqdm.auto import tqdm
 
-from thinker.config import ThinkerConfig
+from thinker.config import NETUID, ThinkerConfig
 from thinker.common_seed import build_sample_seed_plan
 from thinker.problems.decontam import DecontaminationStore
 from thinker.problems.interface import (
@@ -28,10 +28,11 @@ from thinker.reward.relative import (
 from thinker.submission.adapter_validation import ValidatedAdapter, validate_adapter_files
 from thinker.submission.crypto import (
     EncryptedSubmission,
+    adapter_files_hash,
     content_hash,
     decrypt_as_recipient,
     max_encrypted_adapter_ciphertext_bytes,
-    unpack_adapter_bundle,
+    unpack_signed_adapter_bundle,
 )
 from thinker.submission.fingerprint import LoraFingerprint, compute_lora_fingerprint, fingerprints_collide
 from thinker.validator.long_context_qa import (
@@ -189,8 +190,10 @@ class EpochLoop:
         show_progress: bool = False,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
         fingerprint_exempt_miner_ids: set[str] | None = None,
+        netuid: int = NETUID,
     ):
         self._config = config
+        self._netuid = netuid
         self._recipient_id = recipient_id
         self._recipient_privkey = recipient_privkey
         self._transport = transport
@@ -1129,13 +1132,7 @@ class EpochLoop:
 
     @staticmethod
     def _adapter_hash(adapter_files: dict[str, bytes]) -> str:
-        digest = hashlib.sha256()
-        for name in sorted(adapter_files):
-            digest.update(name.encode("utf-8"))
-            digest.update(b"\0")
-            digest.update(adapter_files[name])
-            digest.update(b"\0")
-        return digest.hexdigest()
+        return adapter_files_hash(adapter_files)
 
     def _dedupe_adapter_file_miners(
         self,
@@ -1677,8 +1674,11 @@ class EpochLoop:
             return MinerEpochResult(miner_id, None, f"fetch_or_decrypt_failed: {exc}")
 
         try:
-            adapter_files = unpack_adapter_bundle(
+            adapter_files = unpack_signed_adapter_bundle(
                 plaintext,
+                expected_miner_hotkey=miner_id,
+                expected_epoch=pointer.epoch,
+                expected_netuid=self._netuid,
                 max_total_bytes=self._config.max_adapter_bytes,
                 max_config_bytes=self._config.max_adapter_config_bytes,
             )

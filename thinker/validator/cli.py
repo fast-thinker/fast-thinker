@@ -801,13 +801,14 @@ def _mock_pointer_from_valid_real_submission(
     config: ThinkerConfig,
     recipient_id: str,
     recipient_privkey: bytes,
+    netuid: int,
 ):
     from thinker.submission.adapter_validation import validate_adapter_files
     from thinker.submission.crypto import (
         content_hash,
         decrypt_as_recipient,
         max_encrypted_adapter_ciphertext_bytes,
-        unpack_adapter_bundle,
+        unpack_signed_adapter_bundle,
     )
     from thinker.validator.epoch_loop import MinerSubmissionPointer
 
@@ -829,8 +830,11 @@ def _mock_pointer_from_valid_real_submission(
             plaintext = decrypt_as_recipient(
                 submission, recipient_id, recipient_privkey
             )
-            adapter_files = unpack_adapter_bundle(
+            adapter_files = unpack_signed_adapter_bundle(
                 plaintext,
+                expected_miner_hotkey=source_miner_id,
+                expected_epoch=source_pointer.epoch,
+                expected_netuid=netuid,
                 max_total_bytes=config.max_adapter_bytes,
                 max_config_bytes=config.max_adapter_config_bytes,
             )
@@ -967,13 +971,14 @@ def _fetch_chat_adapter_files(
     config: ThinkerConfig,
     recipient_id: str,
     recipient_privkey: bytes,
+    netuid: int,
 ) -> dict[str, bytes]:
     from thinker.submission.adapter_validation import validate_adapter_files
     from thinker.submission.crypto import (
         content_hash,
         decrypt_as_recipient,
         max_encrypted_adapter_ciphertext_bytes,
-        unpack_adapter_bundle,
+        unpack_signed_adapter_bundle,
     )
 
     submission = transport.fetch(pointer)
@@ -985,8 +990,11 @@ def _fetch_chat_adapter_files(
     if len(submission.wrapped_keys) > config.max_submission_recipients:
         raise ValueError("encrypted submission has too many wrapped recipient keys")
     plaintext = decrypt_as_recipient(submission, recipient_id, recipient_privkey)
-    adapter_files = unpack_adapter_bundle(
+    adapter_files = unpack_signed_adapter_bundle(
         plaintext,
+        expected_miner_hotkey=pointer.miner_id,
+        expected_epoch=pointer.epoch,
+        expected_netuid=netuid,
         max_total_bytes=config.max_adapter_bytes,
         max_config_bytes=config.max_adapter_config_bytes,
     )
@@ -1050,6 +1058,7 @@ def _run_chat(args: argparse.Namespace) -> int:
             config=config,
             recipient_id=wallet.hotkey.ss58_address,
             recipient_privkey=privkey,
+            netuid=args.netuid,
         )
         _status("adapter fetched, decrypted, and validated")
         inference = _build_inference_backend(args, config)
@@ -1171,6 +1180,7 @@ def _run_validator_epochs(
                         config=config,
                         recipient_id=wallet.hotkey.ss58_address,
                         recipient_privkey=recipient_privkey,
+                        netuid=args.netuid,
                     )
                 )
                 if mock_pointer is not None:
@@ -1536,6 +1546,7 @@ def _run_validator_loop(args: argparse.Namespace) -> int:
             seed_fn=lambda: os.urandom(16).hex(),
             long_context_evaluator=long_context_evaluator,
             multiple_choice_evaluator=multiple_choice_evaluator,
+            netuid=args.netuid,
             fingerprint_exempt_miner_ids=(
                 {_MOCK_MINER_ID} if args.mock else None
             ),
