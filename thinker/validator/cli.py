@@ -808,7 +808,7 @@ def _mock_pointer_from_valid_real_submission(
         content_hash,
         decrypt_as_recipient,
         max_encrypted_adapter_ciphertext_bytes,
-        unpack_signed_adapter_bundle,
+        unpack_bound_adapter_bundle,
     )
     from thinker.validator.epoch_loop import MinerSubmissionPointer
 
@@ -830,7 +830,7 @@ def _mock_pointer_from_valid_real_submission(
             plaintext = decrypt_as_recipient(
                 submission, recipient_id, recipient_privkey
             )
-            adapter_files = unpack_signed_adapter_bundle(
+            adapter_files = unpack_bound_adapter_bundle(
                 plaintext,
                 expected_miner_hotkey=source_miner_id,
                 expected_epoch=source_pointer.epoch,
@@ -978,7 +978,7 @@ def _fetch_chat_adapter_files(
         content_hash,
         decrypt_as_recipient,
         max_encrypted_adapter_ciphertext_bytes,
-        unpack_signed_adapter_bundle,
+        unpack_bound_adapter_bundle,
     )
 
     submission = transport.fetch(pointer)
@@ -990,7 +990,7 @@ def _fetch_chat_adapter_files(
     if len(submission.wrapped_keys) > config.max_submission_recipients:
         raise ValueError("encrypted submission has too many wrapped recipient keys")
     plaintext = decrypt_as_recipient(submission, recipient_id, recipient_privkey)
-    adapter_files = unpack_signed_adapter_bundle(
+    adapter_files = unpack_bound_adapter_bundle(
         plaintext,
         expected_miner_hotkey=pointer.miner_id,
         expected_epoch=pointer.epoch,

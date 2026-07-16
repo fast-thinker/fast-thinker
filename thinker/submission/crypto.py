@@ -20,8 +20,7 @@ _MAX_DEFAULT_CONFIG_BYTES = 64 * 1024
 _MAX_DEFAULT_RECIPIENTS = 256
 _MAX_RECIPIENT_ID_BYTES = 256
 _ALLOWED_ADAPTER_FILES = frozenset({"adapter_config.json", "adapter_model.safetensors"})
-_SIGNED_BUNDLE_VERSION = 1
-_SIGNED_BUNDLE_DOMAIN = b"thinker-signed-adapter-bundle-v1\0"
+_BOUND_BUNDLE_VERSION = 1
 
 
 class SubmissionFormatError(ValueError):
@@ -239,63 +238,7 @@ def adapter_files_hash(files: dict[str, bytes]) -> str:
     return digest.hexdigest()
 
 
-def _signature_payload(manifest: dict[str, Any]) -> bytes:
-    return _SIGNED_BUNDLE_DOMAIN + json.dumps(
-        manifest,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-
-
-def _normalize_signature(signature: Any) -> bytes:
-    if isinstance(signature, bytearray):
-        signature = bytes(signature)
-    if isinstance(signature, bytes):
-        try:
-            text = signature.decode("ascii")
-        except UnicodeDecodeError:
-            return signature
-        stripped = text[2:] if text.startswith("0x") else text
-        if stripped and len(stripped) % 2 == 0 and all(
-            ch in "0123456789abcdefABCDEF" for ch in stripped
-        ):
-            return bytes.fromhex(stripped)
-        return signature
-    if isinstance(signature, str):
-        text = signature[2:] if signature.startswith("0x") else signature
-        try:
-            return bytes.fromhex(text)
-        except ValueError as exc:
-            raise SubmissionFormatError("wallet returned a non-hex signature") from exc
-    raise SubmissionFormatError("wallet returned an unsupported signature type")
-
-
-def sign_submission_manifest(wallet: Any, manifest: dict[str, Any]) -> bytes:
-    hotkey = getattr(wallet, "hotkey", None)
-    sign = getattr(hotkey, "sign", None)
-    if not callable(sign):
-        raise SubmissionFormatError("wallet hotkey cannot sign submissions")
-    return _normalize_signature(sign(_signature_payload(manifest)))
-
-
-def verify_submission_manifest_signature(
-    miner_hotkey: str,
-    manifest: dict[str, Any],
-    signature: bytes,
-) -> bool:
-    try:
-        from substrateinterface import Keypair
-
-        keypair = Keypair(ss58_address=miner_hotkey)
-        payload = _signature_payload(manifest)
-        return bool(keypair.verify(payload, signature)) or bool(
-            keypair.verify(payload, signature.hex())
-        )
-    except Exception:
-        return False
-
-
-def _signed_manifest(
+def _bundle_manifest(
     *,
     netuid: int,
     epoch: int,
@@ -315,7 +258,7 @@ def _signed_manifest(
     except ValueError as exc:
         raise SubmissionFormatError("adapter hash must be 32-byte lowercase hex") from exc
     return {
-        "v": _SIGNED_BUNDLE_VERSION,
+        "v": _BOUND_BUNDLE_VERSION,
         "netuid": netuid,
         "epoch": epoch,
         "miner_hotkey": miner_hotkey,
@@ -346,10 +289,9 @@ def pack_adapter_bundle(
     ).encode("utf-8")
 
 
-def pack_signed_adapter_bundle(
+def pack_bound_adapter_bundle(
     files: dict[str, bytes],
     *,
-    wallet: Any,
     netuid: int,
     epoch: int,
     miner_hotkey: str,
@@ -362,18 +304,16 @@ def pack_signed_adapter_bundle(
         max_config_bytes=max_config_bytes,
     )
     data = _strict_json_loads(packed.decode("utf-8"))
-    manifest = _signed_manifest(
+    manifest = _bundle_manifest(
         netuid=netuid,
         epoch=epoch,
         miner_hotkey=miner_hotkey,
         adapter_hash=adapter_files_hash(files),
     )
-    signature = sign_submission_manifest(wallet, manifest)
     return json.dumps(
         {
             "files": data["files"],
             "manifest": manifest,
-            "signature": base64.b64encode(signature).decode("ascii"),
         },
         separators=(",", ":"),
     ).encode("utf-8")
@@ -432,7 +372,7 @@ def unpack_adapter_bundle(
     )
 
 
-def unpack_signed_adapter_bundle(
+def unpack_bound_adapter_bundle(
     plaintext: bytes,
     *,
     expected_miner_hotkey: str,
@@ -448,9 +388,12 @@ def unpack_signed_adapter_bundle(
         data = _strict_json_loads(plaintext.decode("utf-8"))
     except UnicodeDecodeError as exc:
         raise SubmissionFormatError("adapter bundle is not UTF-8 JSON") from exc
-    expected_fields = {"files", "manifest", "signature"}
-    if not isinstance(data, dict) or set(data) != expected_fields:
-        raise SubmissionFormatError("adapter bundle must contain signed files and manifest")
+    if not isinstance(data, dict):
+        raise SubmissionFormatError("adapter bundle must contain files and manifest")
+    required_fields = {"files", "manifest"}
+    allowed_fields = required_fields | {"signature"}
+    if not required_fields.issubset(data) or not set(data).issubset(allowed_fields):
+        raise SubmissionFormatError("adapter bundle must contain files and manifest")
     manifest = data["manifest"]
     if not isinstance(manifest, dict):
         raise SubmissionFormatError("submission manifest must be an object")
@@ -463,7 +406,7 @@ def unpack_signed_adapter_bundle(
     }
     if set(manifest) != required_manifest:
         raise SubmissionFormatError("submission manifest has unexpected fields")
-    if manifest.get("v") != _SIGNED_BUNDLE_VERSION:
+    if manifest.get("v") != _BOUND_BUNDLE_VERSION:
         raise SubmissionFormatError("unsupported submission manifest version")
     if manifest.get("netuid") != expected_netuid:
         raise SubmissionFormatError("submission manifest netuid mismatch")
@@ -479,11 +422,6 @@ def unpack_signed_adapter_bundle(
     actual_hash = adapter_files_hash(files)
     if manifest.get("adapter_hash") != actual_hash:
         raise SubmissionFormatError("submission manifest adapter hash mismatch")
-    signature = _normalize_signature(
-        _decode_b64(data["signature"], field="signature", max_bytes=128)
-    )
-    if not verify_submission_manifest_signature(expected_miner_hotkey, manifest, signature):
-        raise SubmissionFormatError("submission manifest signature is invalid")
     return files
 
 

@@ -10,7 +10,7 @@ from thinker.submission.crypto import (
     EncryptedSubmission,
     content_hash,
     encrypt_for_recipients,
-    pack_signed_adapter_bundle,
+    pack_bound_adapter_bundle,
 )
 from thinker.submission.huggingface import (
     HuggingFaceLocator,
@@ -64,9 +64,8 @@ def build_submission(
     miner_hotkey = getattr(getattr(wallet, "hotkey", None), "ss58_address", None)
     if not isinstance(miner_hotkey, str) or not miner_hotkey:
         raise ValueError("wallet hotkey has no ss58 address")
-    plaintext = pack_signed_adapter_bundle(
+    plaintext = pack_bound_adapter_bundle(
         files,
-        wallet=wallet,
         netuid=netuid,
         epoch=epoch,
         miner_hotkey=miner_hotkey,

@@ -32,7 +32,7 @@ from thinker.submission.crypto import (
     content_hash,
     decrypt_as_recipient,
     max_encrypted_adapter_ciphertext_bytes,
-    unpack_signed_adapter_bundle,
+    unpack_bound_adapter_bundle,
 )
 from thinker.submission.fingerprint import LoraFingerprint, compute_lora_fingerprint, fingerprints_collide
 from thinker.validator.long_context_qa import (
@@ -1674,7 +1674,7 @@ class EpochLoop:
             return MinerEpochResult(miner_id, None, f"fetch_or_decrypt_failed: {exc}")
 
         try:
-            adapter_files = unpack_signed_adapter_bundle(
+            adapter_files = unpack_bound_adapter_bundle(
                 plaintext,
                 expected_miner_hotkey=miner_id,
                 expected_epoch=pointer.epoch,
