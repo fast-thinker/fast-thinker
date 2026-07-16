@@ -1227,6 +1227,10 @@ def _run_validator_epochs(
                 token=hf_token,
                 max_recipients=config.max_submission_recipients,
             )
+            if common_seed_repo and common_seed is None:
+                raise RuntimeError(
+                    "configured evaluation seed is unavailable; refusing to evaluate this epoch"
+                )
             if wandb_logger is not None:
                 try:
                     wandb_logger.start_epoch(epoch, pointers)

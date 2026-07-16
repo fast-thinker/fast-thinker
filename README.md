@@ -130,12 +130,9 @@ Long-context QA is disabled by default. Enable it with
 `--long-context-qa-per-epoch N` or `THINKER_N_LONG_CONTEXT_QA_PER_EPOCH=N`.
 
 Evaluation scores are averaged within each task type before the task types are
-combined. Within a task group, each problem is weighted by peer correctness so
-rarely solved problems count more and universally solved or universally missed
-problems keep a small positive weight. Override this with
-`THINKER_PROBLEM_WEIGHT_FLOOR` and `THINKER_PROBLEM_WEIGHT_GAMMA`. The default
-task weights are math `0.50`, long-context QA `0.30`, and multiple-choice
-`0.20`; set `THINKER_SCORE_WEIGHT_MATH`,
+combined. Within a task group, each evaluated problem counts equally. The
+default task weights are math `0.50`, long-context QA `0.30`, and
+multiple-choice `0.20`; set `THINKER_SCORE_WEIGHT_MATH`,
 `THINKER_SCORE_WEIGHT_LONG_CONTEXT_QA`, or
 `THINKER_SCORE_WEIGHT_MULTIPLE_CHOICE` to override them.
 

@@ -977,14 +977,8 @@ class EpochLoop:
         with self._progress(target, "math batch", unit="sample") as progress:
             for seed in plan.seeds[: plan.common_count]:
                 track = self._track_for_seed(tracks, seed)
-                # Common seeds align the selected track and source row. A track
-                # may still apply validator-local rendering to that shared row.
                 try:
                     instance = render_instance(track, seed)
-                    # A valid owner seed takes precedence over validator-local history;
-                    # otherwise one validator's private history could silently remove a
-                    # supposedly common problem. The epoch-bound derivation makes repeats
-                    # across owner rounds cryptographically unlikely.
                     self._decontam.check_and_record(track, instance.prompt)
                 except Exception as exc:
                     skipped += 1
