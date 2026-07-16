@@ -479,7 +479,9 @@ def unpack_signed_adapter_bundle(
     actual_hash = adapter_files_hash(files)
     if manifest.get("adapter_hash") != actual_hash:
         raise SubmissionFormatError("submission manifest adapter hash mismatch")
-    signature = _decode_b64(data["signature"], field="signature", max_bytes=128)
+    signature = _normalize_signature(
+        _decode_b64(data["signature"], field="signature", max_bytes=128)
+    )
     if not verify_submission_manifest_signature(expected_miner_hotkey, manifest, signature):
         raise SubmissionFormatError("submission manifest signature is invalid")
     return files
